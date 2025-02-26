@@ -36,17 +36,21 @@ class UI:
             # Split path and process each part
             parts = folder_path.split('/')
             
-            # Process all parts except the last one
+            # Process each part of the path
+            current_path = ""
             for i, part in enumerate(parts):
+                current_path = f"{current_path}/{part}" if current_path else part
+                
+                # Create folder if it doesn't exist
                 if part not in current:
                     current[part] = {'__contents': [], '__folders': {}}
                 
                 # If this is the last part, add connections here
                 if i == len(parts) - 1:
                     current[part]['__contents'].extend(conns)
-                else:
-                    # Move to the next level
-                    current = current[part]['__folders']
+                
+                # Move to the next level
+                current = current[part]['__folders']
 
     def get_input(self, y, x, prompt="", hidden=False):
         self.stdscr.move(y, 0)
@@ -169,26 +173,26 @@ class UI:
         self.stdscr.addstr(current_row, 0, "📁 Connections")
         current_row += 1
         
+        # Display root contents first
+        if '__root' in self.folder_structure:
+            current_row, _ = self._display_folder_contents(
+                self.folder_structure['__root'], "", 1, current_row, len(self.connection_rows)
+            )
+        
         # Sort folders to ensure consistent display order
-        sorted_folders = sorted(self.folder_structure.items())
+        sorted_folders = sorted((k, v) for k, v in self.folder_structure.items() if k != '__root')
         
         # Display all folders and their contents with increased indentation
         for folder_name, folder_dict in sorted_folders:
-            if folder_name != '__root':
-                if current_row >= max_y - 1:  # Leave room for menu/search
-                    break
-                # Display folder name with one level of indentation
-                self.stdscr.addstr(current_row, 2, f"📁 {folder_name}")
-                current_row += 1
-                # Display folder contents with additional indentation
-                current_row, _ = self._display_folder_contents(
-                    folder_dict, folder_name, 2, current_row, len(self.connection_rows)
-                )
-            else:
-                # Display root contents with one level of indentation
-                current_row, _ = self._display_folder_contents(
-                    folder_dict, "", 1, current_row, len(self.connection_rows)
-                )
+            if current_row >= max_y - 1:  # Leave room for menu/search
+                break
+            # Display folder name with one level of indentation
+            self.stdscr.addstr(current_row, 2, f"📁 {folder_name}")
+            current_row += 1
+            # Display folder contents with additional indentation
+            current_row, _ = self._display_folder_contents(
+                folder_dict, folder_name, 2, current_row, len(self.connection_rows)
+            )
 
     def display_menu(self, max_y):
         """Display the menu or search bar at the bottom of the screen."""
@@ -235,18 +239,23 @@ class UI:
 
     def _get_all_folders(self):
         """Get a list of all folders with their hierarchy levels."""
-        folders = set()
-        folder_levels = {}  # Store the nesting level of each folder
+        folders = []
+        folder_levels = {}
+        seen_folders = set()  # Track unique folder paths
         
-        # First pass: collect all folders and their immediate levels
-        for folder_path in self.connections.keys():
-            if folder_path and folder_path != 'default':
-                folders.add(folder_path)
-                folder_levels[folder_path] = len(folder_path.split('/')) - 1
+        def traverse_folders(structure, current_path="", level=0):
+            for folder_name, folder_data in sorted(structure.items()):
+                if folder_name != "__root":
+                    full_path = f"{current_path}/{folder_name}" if current_path else folder_name
+                    # Only add if we haven't seen this path before
+                    if full_path not in seen_folders:
+                        folders.append(full_path)
+                        folder_levels[full_path] = level
+                        seen_folders.add(full_path)
+                    traverse_folders(folder_data.get('__folders', {}), full_path, level + 1)
         
-        # Sort folders to maintain hierarchy
-        sorted_folders = sorted(list(folders))
-        return sorted_folders, folder_levels
+        traverse_folders(self.folder_structure)
+        return folders, folder_levels
 
     def select_folder(self, current_y=1, current_folder=None):
         """Interactive folder selector."""
@@ -303,29 +312,11 @@ class UI:
                     break
                 
                 parts = folder.split('/')
+                level = folder_levels[folder]
+                display_name = parts[-1]
                 
-                # For root level folders (no slashes), show them at level 1
-                if len(parts) == 1:
-                    level = 1
-                    display_name = parts[0]
-                else:
-                    # For nested folders, maintain their hierarchy
-                    level = folder_levels[folder]
-                    display_name = parts[-1]
-                    
-                    # If this is a new root folder, add a visual separator
-                    if parts[0] != current_root and level > 0:
-                        current_root = parts[0]
-                        if y < max_y - 1:
-                            indent = "  "
-                            root_text = f"{indent}📂 {current_root}"
-                            if len(root_text) > max_x - 2:
-                                root_text = root_text[:max_x - 5] + "..."
-                            self.stdscr.addstr(y, 0, root_text, curses.A_BOLD)
-                            y += 1
-                        level += 1  # Increase indentation for items under this root
-                
-                indent = "  " * level
+                # Calculate indentation
+                indent = "  " * (level + 1)  # +1 to account for root level
                 display_text = f"{indent}📁 {display_name}"
                 if len(display_text) > max_x - 2:
                     display_text = display_text[:max_x - 5] + "..."
@@ -351,9 +342,10 @@ class UI:
                 if selected == 0:
                     # Create new folder
                     self.stdscr.addstr(max_y - 2, 0, " " * max_x)  # Clear the line
-                    self.stdscr.addstr(max_y - 2, 0, "Enter new folder path: ", curses.A_BOLD)
+                    prompt = "Enter new folder path: "
+                    self.stdscr.addstr(max_y - 2, 0, prompt, curses.A_BOLD)
                     curses.echo()
-                    new_folder = self.stdscr.getstr(max_y - 2, 20).decode('utf-8').strip()
+                    new_folder = self.stdscr.getstr(max_y - 2, len(prompt)).decode('utf-8').strip()
                     curses.noecho()
                     if new_folder:
                         return new_folder
