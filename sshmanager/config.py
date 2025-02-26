@@ -30,6 +30,7 @@ class Config:
 
     def _ensure_salt(self):
         """Ensure salt exists for key derivation."""
+        os.makedirs(CONFIG_DIR, exist_ok=True)  # Create config directory if it doesn't exist
         if not os.path.exists(SALT_FILE):
             with open(SALT_FILE, 'wb') as f:
                 f.write(os.urandom(16))
