@@ -1,0 +1,4 @@
+cryptography>=41.0.0
+pyodbc>=4.0.39  # For MSSQL connections
+psycopg2-binary>=2.9.9  # For PostgreSQL connections
+paramiko>=3.3.1  # For SSH connections
