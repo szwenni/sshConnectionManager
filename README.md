@@ -18,13 +18,18 @@ A simple terminal-based connection manager for SSH and RDP connections.
 
 ## Installation
 
+- Python 3.11 or higher
+
 ```bash
-# Create and activate virtual environment
+# Create and activate virtual environment (dev only)
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Install module to PATH
+pip install -e .
 ```
 
 ## Usage
