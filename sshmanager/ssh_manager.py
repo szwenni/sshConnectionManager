@@ -109,11 +109,11 @@ class SSHConnectionManager:
             if not is_new and 'id' in conn:
                 current_username, current_password = self.config.get_rdp_credentials(conn['id'])
             
-            self.stdscr.addstr(2, 0, "Username:")
-            username = self.ui.get_input(2, 10, "Username: ") or current_username or ""
+            self.stdscr.addstr(2, 0, f"Username ({current_username}): ")
+            username = self.ui.get_input(2, 10, f"Username ({current_username}): ") or current_username or ""
             
-            self.stdscr.addstr(3, 0, "Password:")
-            password = self.ui.get_input(3, 10, "Password: ", True) or current_password or ""
+            self.stdscr.addstr(3, 0, "Password (current): ")
+            password = self.ui.get_input(3, 10, "Password (current): ", True) or current_password or ""
             
             # Store credentials after connection is saved
             conn['_rdp_creds'] = (username, password)
