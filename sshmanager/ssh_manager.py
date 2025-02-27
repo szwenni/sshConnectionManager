@@ -282,6 +282,82 @@ class SSHConnectionManager:
             
             return auth_type
 
+    def handle_credentials_manager(self):
+        """Handle RDP credentials management."""
+        # Get unique usernames from existing RDP connections
+        usernames = set()
+        for folder, connections in self.db.connections.items():
+            for conn in connections:
+                if conn.get('type') == 'rdp':
+                    username, _ = self.config.get_rdp_credentials(conn['id'])
+                    if username:
+                        usernames.add(username)
+        
+        if not usernames:
+            self.show_error("No RDP credentials found")
+            return
+            
+        # Convert to sorted list
+        usernames = sorted(list(usernames))
+        selected = 0
+        
+        while True:
+            self.stdscr.clear()
+            max_y, max_x = self.stdscr.getmaxyx()
+            
+            # Display header
+            heading = "RDP Credentials".center(max_x - 1)[:max_x - 1]
+            self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+            
+            # Display usernames
+            for i, username in enumerate(usernames):
+                if i >= max_y - 4:  # Leave space for instructions
+                    break
+                self.stdscr.addstr(i + 2, 2, username, 
+                                 curses.A_REVERSE if i == selected else curses.A_NORMAL)
+            
+            # Display instructions
+            try:
+                self.stdscr.addstr(max_y - 1, 0, "↑↓: Select  Enter: Change Password  Esc: Back"[:max_x - 1],
+                                 curses.A_REVERSE)
+            except curses.error:
+                pass  # Ignore if we can't write to the last line
+            
+            self.stdscr.refresh()
+            
+            # Handle input
+            key = self.stdscr.getch()
+            
+            if key == curses.KEY_UP and selected > 0:
+                selected -= 1
+            elif key == curses.KEY_DOWN and selected < len(usernames) - 1:
+                selected += 1
+            elif key == 27:  # Escape
+                break
+            elif key == 10:  # Enter
+                username = usernames[selected]
+                
+                # Get new password
+                prompt = f"Enter new password for {username}: "
+                #self.stdscr.addstr(max_y - 3, 0, prompt)
+                #self.stdscr.refresh()
+                new_password = self.ui.get_input(max_y - 2, 0, prompt, hidden=True)
+                
+                if new_password:
+                    # Update all RDP connections with this username
+                    updated = 0
+                    for folder, connections in self.db.connections.items():
+                        for conn in connections:
+                            if conn.get('type') == 'rdp':
+                                current_username, _ = self.config.get_rdp_credentials(conn['id'])
+                                if current_username == username:
+                                    self.config.set_rdp_credentials(conn['id'], username, new_password)
+                                    updated += 1
+                        
+                    #self.show_message(f"Password updated for {updated} connection(s)")
+                    return  # Exit after update
+                break
+
     def main_loop(self):
         while True:
             max_y = self.stdscr.getmaxyx()[0]
@@ -470,6 +546,14 @@ class SSHConnectionManager:
                             self.ssh.connect(conn, self.stdscr)
                         except Exception as e:
                             self.show_error(f"Connection failed: {str(e)}")
+
+            elif key == ord('p'):  # Password manager (RDP only)
+                if self.ui.current_type == 'rdp':
+                    self.handle_credentials_manager()
+                    self.refresh_ui()
+                    
+            elif key == ord('q'):  # Quit
+                return
 
     def set_master_password(self):
         """Set or change the master password."""

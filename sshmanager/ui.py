@@ -215,9 +215,8 @@ class UI:
 
     def display_menu(self, max_y):
         """Display the menu or search bar at the bottom of the screen."""
-        max_x = self.stdscr.getmaxyx()[1]
-        
         try:
+            max_x = self.stdscr.getmaxyx()[1]
             if self.search_mode:
                 # Display search bar
                 search_prompt = f"Search (ESC to exit): {self.search_term}"
@@ -227,10 +226,12 @@ class UI:
             else:
                 # Display menu
                 menu_text = "q:Quit  /:Search  a:Add  e:Edit  d:Delete  m:Master Key  Tab:Switch Type"
+                if self.current_type == 'rdp':
+                    menu_text += "  p:Passwords"
                 padded_menu = menu_text.center(max_x - 1)[:max_x - 1]  # Leave last character
                 self.stdscr.addstr(max_y - 1, 0, padded_menu, curses.A_REVERSE)
         except curses.error:
-            pass  # Ignore errors from writing to bottom-right corner
+            pass  # Ignore curses errors from small terminal windows
 
     def get_selected_connection(self):
         if 0 <= self.selected < len(self.connection_rows):
