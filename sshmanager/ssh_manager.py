@@ -2,6 +2,7 @@ import curses
 from .config import Config
 from .database import Database, log_debug
 from .ssh_connection import SSHConnection
+from .rdp_connection import RDPConnection
 from .ui import UI
 import os
 
@@ -24,6 +25,7 @@ class SSHConnectionManager:
             
         self.db = self.setup_db_connection()
         self.ssh = SSHConnection(self.config)
+        self.rdp = RDPConnection(self.config)
         self.ui = UI(stdscr, self.db.connections)
 
     def get_input(self, y, x, prompt="", hidden=False):
@@ -88,10 +90,202 @@ class SSHConnectionManager:
         self.ui.connections = self.db.connections
         self.ui._build_folder_structure()
 
+    def handle_auth_config(self, conn, is_new=False):
+        """Handle authentication configuration for a connection."""
+        max_y, max_x = self.stdscr.getmaxyx()
+
+        # For new connections, connection type should already be set
+        conn_type = conn.get('type', 'ssh')
+
+        if conn_type == 'rdp':
+            # RDP only supports password auth
+            self.stdscr.clear()
+            heading = "RDP Credentials".center(max_x)[:max_x-1]
+            self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+            
+            # Get current credentials if editing
+            current_username = ""
+            current_password = ""
+            if not is_new and 'id' in conn:
+                current_username, current_password = self.config.get_rdp_credentials(conn['id'])
+            
+            self.stdscr.addstr(2, 0, "Username:")
+            username = self.ui.get_input(2, 10, "Username: ") or current_username or ""
+            
+            self.stdscr.addstr(3, 0, "Password:")
+            password = self.ui.get_input(3, 10, "Password: ", True) or current_password or ""
+            
+            # Store credentials after connection is saved
+            conn['_rdp_creds'] = (username, password)
+            
+            return 'password'  # Always password for RDP
+        else:
+            # For SSH connections, use the existing auth type selector
+            auth_type = self.ui.select_auth_type(current_type=conn.get('auth_type') if not is_new else None)
+            
+            if auth_type == "key":
+                # Handle SSH key configuration
+                self.stdscr.clear()
+                heading = "SSH Key Configuration".center(max_x)[:max_x-1]
+                self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+                
+                current_key = None if is_new else self.config.get_key_path(conn['id'])
+                self.stdscr.addstr(2, 0, "Current SSH key path:")
+                if current_key:
+                    expanded_path = os.path.expanduser(current_key)
+                    self.stdscr.addstr(3, 2, expanded_path, curses.A_DIM)
+                    if expanded_path != current_key:
+                        self.stdscr.addstr(4, 2, f"→ {expanded_path}", curses.A_DIM)
+                else:
+                    default_path = "~/.ssh/id_rsa"
+                    expanded_default = os.path.expanduser(default_path)
+                    self.stdscr.addstr(3, 2, f"{default_path} (default)", curses.A_DIM)
+                    self.stdscr.addstr(4, 2, f"→ {expanded_default}", curses.A_DIM)
+                
+                # Show key options
+                options = []
+                if not is_new:
+                    # For existing connections
+                    current_display = current_key if current_key else "default (~/.ssh/id_rsa)"
+                    options.append(("keep", f"🔒 Keep current key ({current_display})", "Continue using the current SSH key"))
+                options.extend([
+                    ("default", "🔒 Use default key", "Use the default SSH key (~/.ssh/id_rsa)"),
+                    ("new", "🔒 Specify key file", "Choose a different SSH key file"),
+                    ("generate", "🔒 Generate new key", "Create a new SSH key pair")
+                ])
+                
+                selected = 0
+                while True:
+                    # Clear the options area
+                    for i in range(6, max_y - 3):
+                        self.stdscr.move(i, 0)
+                        self.stdscr.clrtoeol()
+                    
+                    # Display options with descriptions
+                    y = 6
+                    for i, (_, text, desc) in enumerate(options):
+                        if y >= max_y - 4:
+                            break
+                        self.stdscr.addstr(y, 2, text,
+                                         curses.A_REVERSE if selected == i else curses.A_NORMAL)
+                        self.stdscr.addstr(y + 1, 4, desc, curses.A_DIM)
+                        y += 3
+                    
+                    # Display instructions
+                    inst_y = max_y - 3
+                    if inst_y > y:
+                        self.stdscr.addstr(inst_y, 0, "↑↓: Navigate  Enter: Select  Esc: Cancel", curses.A_DIM)
+                    
+                    self.stdscr.refresh()
+                    
+                    key = self.stdscr.getch()
+                    if key == curses.KEY_UP and selected > 0:
+                        selected -= 1
+                    elif key == curses.KEY_DOWN and selected < len(options) - 1:
+                        selected += 1
+                    elif key == 10:  # Enter
+                        action = options[selected][0]
+                        if action == "keep":
+                            return auth_type
+                        elif action == "default":
+                            # Store the key path after connection is saved
+                            conn['_key_path'] = ""
+                            return auth_type
+                        elif action == "new":
+                            key_path = self.ui.get_input(max_y - 2, 0, "Enter new key path: ") or ""
+                            if key_path:
+                                expanded_path = os.path.expanduser(key_path)
+                                if os.path.exists(expanded_path):
+                                    # Store the key path after connection is saved
+                                    conn['_key_path'] = key_path
+                                    return auth_type
+                        elif action == "generate":
+                            # Show key generation dialog
+                            self.stdscr.clear()
+                            heading = "Generate SSH Key".center(max_x)[:max_x-1]
+                            self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+                            self.stdscr.addstr(2, 0, "This will create a new SSH key pair.")
+                            key_path = self.ui.get_input(4, 0, "Save to path (default: ~/.ssh/id_rsa): ") or "~/.ssh/id_rsa"
+                            if key_path:
+                                # Store the key path after connection is saved
+                                conn['_key_path'] = key_path
+                                return auth_type
+                    elif key == 27:  # Escape
+                        return None
+            else:  # password auth
+                self.stdscr.clear()
+                heading = "Password Configuration".center(max_x)[:max_x-1]
+                self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+                
+                has_password = False if is_new else self.config.get_password(conn['id']) is not None
+                self.stdscr.addstr(2, 0, "Current status:")
+                self.stdscr.addstr(3, 0, "  Password is " + ("set" if has_password else "not set"), 
+                                 curses.A_DIM)
+                
+                # Show security warning
+                y = 5
+                self.stdscr.addstr(y, 0, "⚠️  Note: Password auth is less secure than SSH keys", curses.A_DIM)
+                y += 2
+                
+                # Show password options
+                if has_password:
+                    options = [
+                        ("keep", "🔒 Keep current password", "Continue using the current password"),
+                        ("new", "🔒 Set new password", "Enter a new password for this connection"),
+                        ("clear", "🔒 Clear password", "Remove stored password")
+                    ]
+                else:
+                    options = [
+                        ("new", "🔒 Set new password", "Enter a password for this connection")
+                    ]
+                
+                selected = 0
+                while True:
+                    # Display options with descriptions
+                    y = 7
+                    for i, (_, text, desc) in enumerate(options):
+                        if y >= max_y - 4:
+                            break
+                        self.stdscr.addstr(y, 2, text,
+                                         curses.A_REVERSE if selected == i else curses.A_NORMAL)
+                        self.stdscr.addstr(y + 1, 4, desc, curses.A_DIM)
+                        y += 3
+                    
+                    # Display instructions
+                    inst_y = max_y - 3
+                    if inst_y > y:
+                        self.stdscr.addstr(inst_y, 0, "↑↓: Navigate  Enter: Select  Esc: Cancel", curses.A_DIM)
+                    
+                    self.stdscr.refresh()
+                    
+                    key = self.stdscr.getch()
+                    if key == curses.KEY_UP and selected > 0:
+                        selected -= 1
+                    elif key == curses.KEY_DOWN and selected < len(options) - 1:
+                        selected += 1
+                    elif key == 10:  # Enter
+                        action = options[selected][0]
+                        if action == "keep":
+                            return auth_type
+                        elif action == "new":
+                            password = self.ui.get_input(max_y - 2, 0, "Enter new password: ", True)
+                            if password:
+                                # Store the password after connection is saved
+                                conn['_password'] = password
+                                return auth_type
+                        elif action == "clear":
+                            # Store the password after connection is saved
+                            conn['_password'] = None
+                            return auth_type
+                    elif key == 27:  # Escape
+                        return None
+            
+            return auth_type
+
     def main_loop(self):
         while True:
             max_y = self.stdscr.getmaxyx()[0]
-            self.ui.display_connections()
+            connections_count = self.ui.display_connections()
             self.ui.display_menu(max_y)
             self.stdscr.refresh()
             
@@ -104,7 +298,7 @@ class SSHConnectionManager:
                 self.ui.search_mode = True
                 self.ui.search_term = ""
             
-            elif self.ui.search_mode:
+            elif self.ui.search_mode and key != curses.KEY_UP and key != curses.KEY_DOWN and key != ord('\n'):
                 if self.ui.handle_search_input(key):
                     self.ui.selected = 0  # Reset selection when search changes
                     continue
@@ -112,59 +306,72 @@ class SSHConnectionManager:
             elif key == ord('m'):  # Master Key
                 self.set_master_password()
                 self.refresh_ui()
-            
+
+            elif key == 9:  # Tab - Switch connection type
+                self.ui.current_type = "rdp" if self.ui.current_type == "ssh" else "ssh"
+                if self.ui.current_type == "rdp" and not self.rdp.rdp_available:
+                    self.show_error("RDP not available (mstsc.exe not found)")
+                    self.ui.current_type = "ssh"
+                self.ui.selected = 0
+
             elif key == ord('a'):  # Add
                 # Basic connection info screen
                 self.stdscr.clear()
                 max_x = self.stdscr.getmaxyx()[1]
-                heading = "Add Connection".center(max_x)[:max_x-1]
+                heading = "Add New Connection".center(max_x)[:max_x-1]
                 self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
                 
-                # Get basic connection info
-                self.stdscr.addstr(2, 0, "Enter connection details:")
+                # Interactive connection type selection first
                 conn_data = {}
-                conn_data["name"] = self.ui.get_input(4, 0, "Name: ")
-                conn_data["ip"] = self.ui.get_input(5, 0, "IP: ")
-                conn_data["username"] = self.ui.get_input(6, 0, "Username: ")
+                conn_data["type"] = self.ui.select_connection_type(current_y=2)
                 
-                # Get port with default 22
-                port_str = self.ui.get_input(7, 0, "Port (default: 22): ")
-                conn_data["port"] = int(port_str) if port_str else 22
+                self.stdscr.clear()
+                self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
                 
-                if not all(conn_data[key] for key in ["name", "ip", "username"] if key in conn_data):
-                    continue  # Skip if any required field is empty
+                # Get connection details
+                self.stdscr.addstr(2, 0, "Name:")
+                conn_data["name"] = self.ui.get_input(2, 6, "Name: ")
+                if not conn_data["name"]:
+                    return
+                
+                self.stdscr.addstr(3, 0, "IP/Host:")
+                conn_data["ip"] = self.ui.get_input(3, 9, "IP/Host: ")
+                if not conn_data["ip"]:
+                    return
+                
+                # Username only for SSH connections
+                if conn_data["type"] == "ssh":
+                    self.stdscr.addstr(4, 0, "Username:")
+                    conn_data["username"] = self.ui.get_input(4, 10, "Username: ")
+                    if not conn_data["username"]:
+                        return
+                    
+                    self.stdscr.addstr(5, 0, "Port (22):")
+                    port = self.ui.get_input(5, 11, "Port (22): ")
+                    conn_data["port"] = int(port) if port else 22
+                else:
+                    conn_data["username"] = ""
+                    conn_data["port"] = None
                 
                 # Interactive folder selection in separate screen
-                conn_data["folder"] = self.ui.select_folder(current_y=8)
+                conn_data["folder"] = self.ui.select_folder(current_y=8, conn_type=conn_data["type"])
                 
-                # Interactive auth type selection in separate screen
-                conn_data["auth_type"] = self.ui.select_auth_type(current_y=8)
+                # Handle authentication configuration
+                auth_type = self.handle_auth_config(conn_data, is_new=True)
+                conn_data["auth_type"] = auth_type
                 
-                # Get auth credentials based on type
-                if conn_data["auth_type"] == "key":
-                    self.stdscr.clear()
-                    heading = "SSH Key Configuration".center(max_x)[:max_x-1]
-                    self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
-                    self.stdscr.addstr(2, 0, "Enter the path to your SSH key file.")
-                    self.stdscr.addstr(3, 0, "Leave empty to use the default (~/.ssh/id_rsa)")
-                    key_path = self.ui.get_input(5, 0, "Key path: ") or ""
-                    
-                    # Save connection first to get the ID
-                    self.db.save_connection(conn_data)
-                    if key_path:
-                        self.config.set_key_path(conn_data["id"], key_path)
-                else:
-                    self.stdscr.clear()
-                    heading = "Password Authentication".center(max_x)[:max_x-1]
-                    self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
-                    self.stdscr.addstr(2, 0, "Enter your password.")
-                    self.stdscr.addstr(3, 0, "Note: Storing passwords is less secure than using SSH keys.")
-                    password = self.ui.get_input(5, 0, "Password: ", True)
-                    
-                    # Save connection first to get the ID
-                    self.db.save_connection(conn_data)
-                    if password:
-                        self.config.set_password(conn_data["id"], password)
+                # Save the connection
+                self.db.save_connection(conn_data)
+                
+                # Now that we have the connection ID, save any credentials
+                if '_rdp_creds' in conn_data:
+                    username, password = conn_data.pop('_rdp_creds')
+                    if username and password:
+                        self.config.set_rdp_credentials(conn_data['id'], username, password)
+                if '_key_path' in conn_data:
+                    self.config.set_key_path(conn_data['id'], conn_data.pop('_key_path'))
+                if '_password' in conn_data:
+                    self.config.set_password(conn_data['id'], conn_data.pop('_password'))
                 
                 self.refresh_ui()
                 # Reset selection to first connection after adding
@@ -195,170 +402,19 @@ class SSHConnectionManager:
                     if new_port: conn_data["port"] = int(new_port)
                     
                     # Interactive folder selection
-                    new_folder = self.ui.select_folder(current_y=8, current_folder=conn['folder'])
+                    new_folder = self.ui.select_folder(current_y=8, current_folder=conn['folder'], conn_type=conn_data["type"])
                     
                     if new_folder:
                         conn_data["folder"] = new_folder
-                    
-                    # Interactive auth type selection
-                    new_auth_type = self.ui.select_auth_type(current_y=8, current_auth=conn['auth_type'])
-                    
-                    if new_auth_type != conn['auth_type']:
-                        conn_data["auth_type"] = new_auth_type
-                    
-                    # Always show credential configuration for the selected auth type
-                    if new_auth_type == "key":
-                        self.stdscr.clear()
-                        heading = "SSH Key Configuration".center(max_x)[:max_x-1]
-                        self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
-                        
-                        current_key = self.config.get_key_path(conn['id'])
-                        self.stdscr.addstr(2, 0, "Current SSH key path:")
-                        if current_key:
-                            expanded_path = os.path.expanduser(current_key)
-                            self.stdscr.addstr(3, 0, f"  {current_key}", curses.A_DIM)
-                            if expanded_path != current_key:
-                                self.stdscr.addstr(4, 0, f"  → {expanded_path}", curses.A_DIM)
-                        else:
-                            default_path = "~/.ssh/id_rsa"
-                            expanded_default = os.path.expanduser(default_path)
-                            self.stdscr.addstr(3, 0, f"  {default_path}", curses.A_DIM)
-                            self.stdscr.addstr(4, 0, f"  → {expanded_default}", curses.A_DIM)
-                        
-                        # Show key options
-                        current_display = current_key if current_key else "default (~/.ssh/id_rsa)"
-                        options = [
-                            ("keep", f"🔒 Keep current key ({current_display})", "Continue using the current SSH key"),
-                            ("default", "🔒 Use default key", "Switch to default SSH key (~/.ssh/id_rsa)"),
-                            ("new", "🔒 Specify key file", "Specify a different SSH key file"),
-                            ("generate", "🔒 Generate new key", "Create a new SSH key pair")
-                        ]
-                        
-                        selected = 0
-                        while True:
-                            # Clear the options area
-                            for i in range(6, max_y - 3):
-                                self.stdscr.move(i, 0)
-                                self.stdscr.clrtoeol()
-                            
-                            # Display options with descriptions
-                            y = 6
-                            for i, (_, text, desc) in enumerate(options):
-                                if y >= max_y - 4:
-                                    break
-                                self.stdscr.addstr(y, 2, text,
-                                                 curses.A_REVERSE if selected == i else curses.A_NORMAL)
-                                self.stdscr.addstr(y + 1, 4, desc, curses.A_DIM)
-                                y += 3
-                            
-                            # Display instructions
-                            inst_y = max_y - 3
-                            if inst_y > y:
-                                self.stdscr.addstr(inst_y, 0, "↑↓: Navigate  Enter: Select  Esc: Cancel", curses.A_DIM)
-                            
-                            self.stdscr.refresh()
-                            
-                            key = self.stdscr.getch()
-                            if key == curses.KEY_UP and selected > 0:
-                                selected -= 1
-                            elif key == curses.KEY_DOWN and selected < len(options) - 1:
-                                selected += 1
-                            elif key == 10:  # Enter
-                                action = options[selected][0]
-                                if action == "keep":
-                                    break
-                                elif action == "default":
-                                    self.config.set_key_path(conn['id'], "")
-                                    break
-                                elif action == "new":
-                                    key_path = self.ui.get_input(max_y - 2, 0, "Enter new key path: ") or ""
-                                    if key_path:
-                                        self.config.set_key_path(conn['id'], key_path)
-                                    break
-                                elif action == "generate":
-                                    # Show key generation dialog
-                                    self.stdscr.clear()
-                                    heading = "Generate SSH Key".center(max_x)[:max_x-1]
-                                    self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
-                                    self.stdscr.addstr(2, 0, "This will create a new SSH key pair.")
-                                    key_path = self.ui.get_input(4, 0, "Save to path (default: ~/.ssh/id_rsa): ") or "~/.ssh/id_rsa"
-                                    if key_path:
-                                        # Generate key pair (implementation needed)
-                                        self.config.set_key_path(conn['id'], key_path)
-                                    break
-                            elif key == 27:  # Escape
-                                break
-                    else:  # password auth
-                        self.stdscr.clear()
-                        heading = "Password Configuration".center(max_x)[:max_x-1]
-                        self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
-                        
-                        has_password = self.config.get_password(conn['id']) is not None
-                        self.stdscr.addstr(2, 0, "Current status:")
-                        self.stdscr.addstr(3, 0, "  Password is " + ("set" if has_password else "not set"), 
-                                         curses.A_DIM)
-                        
-                        # Show security warning
-                        y = 5
-                        self.stdscr.addstr(y, 0, "⚠️  Note: Password auth is less secure than SSH keys", curses.A_DIM)
-                        y += 2
-                        
-                        # Show password options
-                        if has_password:
-                            options = [
-                                ("keep", "🔒 Keep current password", "Continue using the current password"),
-                                ("new", "🔒 Set new password", "Enter a new password for this connection"),
-                                ("clear", "🔒 Clear password", "Remove stored password")
-                            ]
-                        else:
-                            options = [
-                                ("new", "🔒 Set new password", "Enter a password for this connection")
-                            ]
-                        
-                        selected = 0
-                        while True:
-                            # Display options with descriptions
-                            y = 7
-                            for i, (_, text, desc) in enumerate(options):
-                                if y >= max_y - 4:
-                                    break
-                                self.stdscr.addstr(y, 2, text,
-                                                 curses.A_REVERSE if selected == i else curses.A_NORMAL)
-                                self.stdscr.addstr(y + 1, 4, desc, curses.A_DIM)
-                                y += 3
-                            
-                            # Display instructions
-                            inst_y = max_y - 3
-                            if inst_y > y:
-                                self.stdscr.addstr(inst_y, 0, "↑↓: Navigate  Enter: Select  Esc: Cancel", curses.A_DIM)
-                            
-                            self.stdscr.refresh()
-                            
-                            key = self.stdscr.getch()
-                            if key == curses.KEY_UP and selected > 0:
-                                selected -= 1
-                            elif key == curses.KEY_DOWN and selected < len(options) - 1:
-                                selected += 1
-                            elif key == 10:  # Enter
-                                action = options[selected][0]
-                                if action == "keep":
-                                    break
-                                elif action == "new":
-                                    password = self.ui.get_input(max_y - 2, 0, "Enter new password: ", True)
-                                    if password:
-                                        self.config.set_password(conn['id'], password)
-                                    break
-                                elif action == "clear":
-                                    self.config.set_password(conn['id'], None)
-                                    break
-                            elif key == 27:  # Escape
-                                break
-                    
+
+                    auth_type = self.handle_auth_config(conn_data, is_new=False)
+                    conn_data["auth_type"] = auth_type
+
                     # Save the updated connection
                     self.db.save_connection(conn_data)
                     self.refresh_ui()
             
-            elif key == ord('r'):  # Delete
+            elif key == ord('d'):  # Delete
                 conn = self.ui.get_selected_connection()
                 if conn:
                     self.stdscr.clear()
@@ -388,21 +444,29 @@ class SSHConnectionManager:
                         self.refresh_ui()
             
             elif key == curses.KEY_UP:
-                total_connections = sum(len(conns) for conns in self.db.connections.values())
                 if self.ui.selected > 0:
                     self.ui.selected -= 1
             elif key == curses.KEY_DOWN:
-                total_connections = sum(len(conns) for conns in self.db.connections.values())
-                if self.ui.selected < total_connections - 1:
+                # Count only connections of current type
+                filtered_count = sum(
+                    len([c for c in conns if c.get('type', 'ssh') == self.ui.current_type])
+                    for conns in self.db.connections.values()
+                )
+                if self.ui.selected < connections_count - 1:
                     self.ui.selected += 1
             
             elif key == ord('\n') or key == ord('c'):  # Connect
                 conn = self.ui.get_selected_connection()
                 if conn:
-                    try:
-                        self.ssh.connect(conn, self.stdscr)
-                    except Exception as e:
-                        self.show_error(f"Connection failed: {str(e)}")
+                    if conn.get('type', 'ssh') == 'rdp':
+                        success, message = self.rdp.connect(conn)
+                        if not success:
+                            self.show_error(message)
+                    else:
+                        try:
+                            self.ssh.connect(conn, self.stdscr)
+                        except Exception as e:
+                            self.show_error(f"Connection failed: {str(e)}")
 
     def set_master_password(self):
         """Set or change the master password."""

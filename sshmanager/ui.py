@@ -1,6 +1,15 @@
 import curses
 from typing import Dict, List
 from collections import defaultdict
+import os
+from datetime import datetime
+
+LOG_FILE = os.path.join(os.getcwd(), "ssh_manager_debug.log")
+
+def log_debug(message: str):
+    with open(LOG_FILE, 'a') as f:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        f.write(f"[{timestamp}] {message}\n")
 
 class UI:
     def __init__(self, stdscr, connections: Dict[str, List[dict]]):
@@ -11,46 +20,42 @@ class UI:
         self.folder_structure = {}  # Nested folder structure
         self.search_mode = False
         self.search_term = ""
+        self.current_type = "ssh"  # Current connection type being displayed
         curses.curs_set(0)
         self._build_folder_structure()
 
     def _build_folder_structure(self):
-        """Build nested folder structure from flat folder paths."""
-        self.folder_structure = {}
+        """Build folder structure from connections."""
+        # Initialize structure with type separation
+        self.folder_structure = {
+            'ssh': {'__root': {'connections': [], 'children': {}}},
+            'rdp': {'__root': {'connections': [], 'children': {}}}
+        }
         
-        # First, add the root folder if it doesn't exist
-        if '' not in self.connections and 'default' not in self.connections:
-            self.folder_structure['__root'] = {'__contents': [], '__folders': {}}
-            
-        # Process each folder path
-        for folder_path, conns in self.connections.items():
-            current = self.folder_structure
-            
-            # Handle default or empty folder as root
-            if not folder_path or folder_path == 'default':
-                if '__root' not in self.folder_structure:
-                    self.folder_structure['__root'] = {'__contents': [], '__folders': {}}
-                self.folder_structure['__root']['__contents'].extend(conns)
-                continue
+        # Process each connection
+        for folder, connections in self.connections.items():
+            for conn in connections:
+                conn_type = conn.get('type', 'ssh')
+                folder_parts = folder.split('/') if folder else []
                 
-            # Split path and process each part
-            parts = folder_path.split('/')
-            
-            # Process each part of the path
-            current_path = ""
-            for i, part in enumerate(parts):
-                current_path = f"{current_path}/{part}" if current_path else part
+                # Start at the type's root
+                current = self.folder_structure[conn_type]['__root']
                 
-                # Create folder if it doesn't exist
-                if part not in current:
-                    current[part] = {'__contents': [], '__folders': {}}
+                # Add connection to root if no folder
+                if not folder_parts or folder_parts[0] == 'default':
+                    current['connections'].append(conn)
+                    continue
                 
-                # If this is the last part, add connections here
-                if i == len(parts) - 1:
-                    current[part]['__contents'].extend(conns)
+                # Build folder path
+                for part in folder_parts:
+                    if part not in current['children']:
+                        current['children'][part] = {'connections': [], 'children': {}}
+                    current = current['children'][part]
                 
-                # Move to the next level
-                current = current[part]['__folders']
+                # Add connection to final folder
+                current['connections'].append(conn)
+        
+        return self.folder_structure[self.current_type]
 
     def get_input(self, y, x, prompt="", hidden=False):
         self.stdscr.move(y, 0)
@@ -78,19 +83,19 @@ class UI:
         if not self.search_term:
             return folder_dict
 
-        filtered = {'__contents': [], '__folders': {}}
+        filtered = {'connections': [], 'children': {}}
         
-        # Filter contents
-        filtered['__contents'] = [
-            conn for conn in folder_dict.get('__contents', [])
+        # Filter connections
+        filtered['connections'] = [
+            conn for conn in folder_dict.get('connections', [])
             if self._matches_search(conn)
         ]
         
         # Filter subfolders
-        for folder_name, subfolder in folder_dict.get('__folders', {}).items():
+        for folder_name, subfolder in folder_dict.get('children', {}).items():
             filtered_subfolder = self._filter_folder_structure(subfolder)
-            if filtered_subfolder['__contents'] or filtered_subfolder['__folders']:
-                filtered['__folders'][folder_name] = filtered_subfolder
+            if filtered_subfolder['connections'] or filtered_subfolder['children']:
+                filtered['children'][folder_name] = filtered_subfolder
                 
         return filtered
 
@@ -98,17 +103,22 @@ class UI:
         """Recursively display folder contents with proper indentation."""
         max_y, max_x = self.stdscr.getmaxyx()
         indent = "  " * level
-
+        
         # If in search mode, filter the folder structure
         display_dict = self._filter_folder_structure(folder_dict) if self.search_mode else folder_dict
 
         # Sort connections by name for consistent display
-        sorted_contents = sorted(display_dict.get('__contents', []), key=lambda x: x['name'])
+        sorted_connections = sorted(display_dict.get('connections', []), key=lambda x: x['name'])
         
         # Display contents of current folder
-        for conn in sorted_contents:
+        for conn in sorted_connections:
+            # Skip connections that don't match the current type
+            if conn.get('type', 'ssh') != self.current_type:
+                continue
+                
             if row >= max_y - 1:  # Leave room for menu/search
                 break
+            
             # Calculate available width for the line
             available_width = max_x - len(indent) - 1
             name_ip = f"{conn['name']} ({conn['ip']})"
@@ -130,7 +140,7 @@ class UI:
             connection_index += 1
 
         # Sort subfolders for consistent display
-        sorted_folders = sorted(display_dict.get('__folders', {}).items())
+        sorted_folders = sorted(display_dict.get('children', {}).items())
         
         # Display subfolders
         for folder_name, subfolder in sorted_folders:
@@ -160,7 +170,7 @@ class UI:
         max_y, max_x = self.stdscr.getmaxyx()
         
         # Display header in the first row
-        heading = "SSH Connection Manager".center(max_x)[:max_x-1]
+        heading = f"Connection Manager - {self.current_type.upper()} Connections".center(max_x)[:max_x-1]
         self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
         
         # Reset connection rows mapping
@@ -173,26 +183,35 @@ class UI:
         self.stdscr.addstr(current_row, 0, "📁 Connections")
         current_row += 1
         
+        # Get the current type's folder structure
+        type_structure = self.folder_structure[self.current_type]
+        
         # Display root contents first
-        if '__root' in self.folder_structure:
+        if '__root' in type_structure:
             current_row, _ = self._display_folder_contents(
-                self.folder_structure['__root'], "", 1, current_row, len(self.connection_rows)
+                type_structure['__root'], "", 1, current_row, len(self.connection_rows)
             )
         
         # Sort folders to ensure consistent display order
-        sorted_folders = sorted((k, v) for k, v in self.folder_structure.items() if k != '__root')
+        sorted_folders = sorted(
+            (k, v) for k, v in type_structure.get('children', {}).items()
+        )
         
         # Display all folders and their contents with increased indentation
         for folder_name, folder_dict in sorted_folders:
             if current_row >= max_y - 1:  # Leave room for menu/search
                 break
+            
             # Display folder name with one level of indentation
             self.stdscr.addstr(current_row, 2, f"📁 {folder_name}")
             current_row += 1
+            
             # Display folder contents with additional indentation
             current_row, _ = self._display_folder_contents(
                 folder_dict, folder_name, 2, current_row, len(self.connection_rows)
             )
+            
+        return len(self.connection_rows)
 
     def display_menu(self, max_y):
         """Display the menu or search bar at the bottom of the screen."""
@@ -206,13 +225,12 @@ class UI:
                 self.stdscr.addstr(max_y - 1, 0, " " * (max_x - 1))  # Clear the line
                 self.stdscr.addstr(max_y - 1, 0, search_prompt[:max_x - 1], curses.A_REVERSE)
             else:
-                # Display regular menu
-                menu = "a=Add  e=Edit  r=Remove  c=Connect  m=Master Key  /=Search  q=Quit"
-                padded_menu = menu.center(max_x - 1)[:max_x - 1]  # Leave last character
+                # Display menu
+                menu_text = "q:Quit  /:Search  a:Add  e:Edit  d:Delete  m:Master Key  Tab:Switch Type"
+                padded_menu = menu_text.center(max_x - 1)[:max_x - 1]  # Leave last character
                 self.stdscr.addstr(max_y - 1, 0, padded_menu, curses.A_REVERSE)
         except curses.error:
-            # Safely handle any curses errors
-            pass
+            pass  # Ignore errors from writing to bottom-right corner
 
     def get_selected_connection(self):
         if 0 <= self.selected < len(self.connection_rows):
@@ -237,41 +255,62 @@ class UI:
             return True
         return False
 
-    def _get_all_folders(self):
-        """Get a list of all folders with their hierarchy levels."""
-        folders = []
-        folder_levels = {}
-        seen_folders = set()  # Track unique folder paths
+    def get_folder_structure(self, conn_type=None):
+        """Get folder structure from connections, optionally filtered by type."""
+        folder_tree = []
         
-        def traverse_folders(structure, current_path="", level=0):
-            for folder_name, folder_data in sorted(structure.items()):
-                if folder_name != "__root":
-                    full_path = f"{current_path}/{folder_name}" if current_path else folder_name
-                    # Only add if we haven't seen this path before
-                    if full_path not in seen_folders:
-                        folders.append(full_path)
-                        folder_levels[full_path] = level
-                        seen_folders.add(full_path)
-                    traverse_folders(folder_data.get('__folders', {}), full_path, level + 1)
+        # Build folder tree from existing folders
+        for folder in sorted(self.connections.keys()):
+            # Skip folders that don't have connections of the requested type
+            if conn_type:
+                if not any(conn['type'] == conn_type for conn in self.connections[folder]):
+                    continue
+                    
+            if folder:  # Skip root folder
+                parts = folder.split("/")
+                current = folder_tree
+                for i, part in enumerate(parts):
+                    # Find or create folder
+                    found = False
+                    for item in current:
+                        if item["name"] == part:
+                            found = True
+                            current = item["children"]
+                            break
+                    if not found:
+                        new_folder = {"name": part, "children": []}
+                        current.append(new_folder)
+                        current = new_folder["children"]
         
-        traverse_folders(self.folder_structure)
-        return folders, folder_levels
-
-    def select_folder(self, current_y=1, current_folder=None):
+        return folder_tree
+        
+    def select_folder(self, current_y=2, current_folder=None, conn_type=None):
         """Interactive folder selector."""
         max_y, max_x = self.stdscr.getmaxyx()
-        folders, folder_levels = self._get_all_folders()
         
-        # Find the index of the current folder
-        selected = 1  # Default to "Connections" (previously "Default")
+        # Get folder structure filtered by connection type
+        folder_tree = self.get_folder_structure(conn_type)
+        
+        # Build flat list of folders with their full paths
+        folders = []
+        def add_folders(tree, path=""):
+            for folder in tree:
+                full_path = f"{path}/{folder['name']}" if path else folder["name"]
+                if folder['name'] != 'default':
+                    folders.append(full_path)
+                add_folders(folder["children"], full_path)
+        add_folders(folder_tree)
+        
+        # Add root and new folder options
+        #folders = ["", "New Folder"] + folders
+        
+        # Find index of current folder
+        selected = 0
         if current_folder:
-            if current_folder == "default":
-                selected = 1
-            else:
-                try:
-                    selected = folders.index(current_folder) + 2  # +2 for Create New and Connections
-                except ValueError:
-                    selected = 1
+            try:
+                selected = folders.index(current_folder)
+            except ValueError:
+                pass
         
         scroll_offset = 0
         
@@ -312,7 +351,7 @@ class UI:
                     break
                 
                 parts = folder.split('/')
-                level = folder_levels[folder]
+                level = len(parts) - 1
                 display_name = parts[-1]
                 
                 # Calculate indentation
@@ -360,43 +399,50 @@ class UI:
         
         return "default"
 
-    def select_auth_type(self, current_y=1, current_auth=None):
-        """Interactive authentication type selector."""
+    def select_auth_type(self, current_y=2, current_type=None):
+        """Select authentication type."""
         max_y, max_x = self.stdscr.getmaxyx()
         
-        auth_types = [
-            ("key", "🔑 SSH Key Authentication", "Most secure, uses SSH key pairs"),
-            ("password", "🔒 Password Authentication", "Less secure, uses password")
+        # Clear screen
+        self.stdscr.clear()
+        
+        # Display header
+        heading = "Select Authentication Type".center(max_x)[:max_x-1]
+        self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+        
+        # Add description with offset
+        y = current_y + 2
+        self.stdscr.addstr(y, 2, "Choose how to authenticate with the server:")
+        
+        # Show authentication options
+        options = [
+            ("key", "🔑 SSH Key Authentication", "More secure, recommended for SSH connections"),
+            ("password", "🔒 Password Authentication", "Simple but less secure than SSH keys")
         ]
         
-        # Find index of current auth type
+        # Find the index of the current type
         selected = 0
-        if current_auth:
-            for i, (auth_type, _, _) in enumerate(auth_types):
-                if auth_type == current_auth:
+        if current_type:
+            for i, (type_id, _, _) in enumerate(options):
+                if type_id == current_type:
                     selected = i
                     break
         
         while True:
-            self.stdscr.clear()
-            heading = "Select Authentication Method".center(max_x)[:max_x-1]
-            self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
-            
-            # Display auth type options with descriptions
-            y = current_y
-            for i, (auth_type, display_text, description) in enumerate(auth_types):
-                if y < max_y - 2:
-                    # Display the main option
-                    self.stdscr.addstr(y, 0, display_text,
-                                     curses.A_REVERSE if selected == i else curses.A_NORMAL)
-                    # Display the description
-                    if y + 1 < max_y - 2:
-                        self.stdscr.addstr(y + 1, 2, description, curses.A_DIM)
-                    y += 3  # Space for next option
+            # Display options with descriptions
+            y = current_y + 4  # More spacing from the top
+            for i, (_, text, desc) in enumerate(options):
+                if y >= max_y - 4:
+                    break
+                
+                self.stdscr.addstr(y, 2, text,
+                                 curses.A_REVERSE if selected == i else curses.A_NORMAL)
+                self.stdscr.addstr(y + 1, 4, desc, curses.A_DIM)
+                y += 3
             
             # Display instructions
             inst_y = max_y - 3
-            if inst_y > current_y + len(auth_types) * 3:
+            if inst_y > y:
                 self.stdscr.addstr(inst_y, 0, "↑↓: Navigate  Enter: Select  Esc: Cancel", curses.A_DIM)
             
             self.stdscr.refresh()
@@ -404,14 +450,62 @@ class UI:
             key = self.stdscr.getch()
             if key == curses.KEY_UP and selected > 0:
                 selected -= 1
-            elif key == curses.KEY_DOWN and selected < len(auth_types) - 1:
+            elif key == curses.KEY_DOWN and selected < len(options) - 1:
                 selected += 1
             elif key == 10:  # Enter
-                auth_type = auth_types[selected][0]
-                return auth_type
+                return options[selected][0]
             elif key == 27:  # Escape
-                if current_auth:
-                    return current_auth
-                return auth_types[0][0]  # Default to SSH key
+                return None
+
+    def select_connection_type(self, current_y=1, current_type=None):
+        """Interactive connection type selector."""
+        max_y, max_x = self.stdscr.getmaxyx()
         
-        return auth_types[0][0]  # Default to SSH key
+        types = [
+            ("ssh", "🔌 SSH Connection", "Secure Shell connection for remote terminal access"),
+            ("rdp", "🖥️ RDP Connection", "Remote Desktop Protocol for Windows remote access")
+        ]
+        
+        # Find index of current type
+        selected = 0
+        if current_type:
+            for i, (type_id, _, _) in enumerate(types):
+                if type_id == current_type:
+                    selected = i
+                    break
+        
+        while True:
+            self.stdscr.clear()
+            heading = "Select Connection Type".center(max_x)[:max_x-1]
+            self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+            
+            # Display type options with descriptions
+            y = current_y
+            for i, (type_id, display_text, description) in enumerate(types):
+                if y < max_y - 2:
+                    # Display the main option
+                    self.stdscr.addstr(y, 0, display_text,
+                                     curses.A_REVERSE if selected == i else curses.A_NORMAL)
+                    # Display the description
+                    if y + 1 < max_y - 2:
+                        self.stdscr.addstr(y + 1, 2, description, curses.A_DIM)
+                    y += 3
+            
+            # Display instructions
+            inst_y = max_y - 3
+            if inst_y > current_y + 2:
+                self.stdscr.addstr(inst_y, 0, "↑↓: Navigate  Enter: Select  Esc: Cancel", curses.A_DIM)
+            
+            self.stdscr.refresh()
+            
+            key = self.stdscr.getch()
+            if key == curses.KEY_UP and selected > 0:
+                selected -= 1
+            elif key == curses.KEY_DOWN and selected < len(types) - 1:
+                selected += 1
+            elif key == 10:  # Enter
+                return types[selected][0]
+            elif key == 27:  # Escape
+                if current_type:
+                    return current_type
+                return types[0][0]  # Default to SSH

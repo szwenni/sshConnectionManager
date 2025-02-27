@@ -21,12 +21,23 @@ class Config:
             "db": {"server": "", "database": "", "username": "", "password": "", "port": "5432", "type": "postgres"},
             "passwords": {},  # For SSH password auth
             "key_paths": {},  # For SSH key paths
-            "key_passwords": {}  # For SSH key passwords
+            "key_passwords": {},  # For SSH key passwords
+            "rdp_credentials": {}  # For RDP credentials (overrides DB)
         }
         self.fernet = None
         self.is_encrypted = False
         self._ensure_salt()
         self.load_config()
+        
+        # Initialize all sections if they don't exist
+        if 'master_key' not in self.config:
+            self.config['master_key'] = None
+        if 'passwords' not in self.config:
+            self.config['passwords'] = {}
+        if 'key_paths' not in self.config:
+            self.config['key_paths'] = {}
+        if 'rdp_credentials' not in self.config:
+            self.config['rdp_credentials'] = {}
 
     def _ensure_salt(self):
         """Ensure salt exists for key derivation."""
@@ -178,38 +189,76 @@ class Config:
                     backup_file = old_file + '.bak'
                     os.rename(old_file, backup_file)
 
-    def set_key_path(self, conn_id, key_path):
-        """Set the SSH key path for a connection."""
-        self.config["key_paths"][str(conn_id)] = key_path
+    def _ensure_section(self, section):
+        """Ensure a section exists in the config."""
+        if section not in self.config:
+            self.config[section] = {}
+            self._save_config()
+
+    def set_rdp_credentials(self, conn_id, username, password=None):
+        """Set RDP credentials for a connection."""
+        conn_id = str(conn_id)
+        self._ensure_section("rdp_credentials")
+        self.config["rdp_credentials"][conn_id] = {
+            "username": username,
+            "password": password
+        }
         self._save_config()
+
+    def set_password(self, conn_id, password):
+        """Set password for a connection."""
+        conn_id = str(conn_id)
+        self._ensure_section("passwords")
+        self.config["passwords"][conn_id] = password
+        self._save_config()
+
+    def set_key_path(self, conn_id, key_path):
+        """Set key path for a connection."""
+        conn_id = str(conn_id)
+        self._ensure_section("key_paths")
+        self.config["key_paths"][conn_id] = key_path
+        self._save_config()
+
+    def set_key_password(self, conn_id, key_password):
+        """Set key password for a connection."""
+        conn_id = str(conn_id)
+        self._ensure_section("key_passwords")
+        self.config["key_passwords"][conn_id] = key_password
+        self._save_config()
+
+    def _init_config(self):
+        """Initialize config with all required sections."""
+        sections = ["master_key", "passwords", "key_paths", "key_passwords", "rdp_credentials"]
+        for section in sections:
+            self._ensure_section(section)
 
     def get_key_path(self, conn_id):
         """Get the SSH key path for a connection."""
         return self.config["key_paths"].get(str(conn_id), os.path.join(HOME_DIR, ".ssh", "id_rsa"))
 
-    def set_key_password(self, conn_id, password):
-        """Set the SSH key password for a connection."""
-        if password:
-            self.config["key_passwords"][str(conn_id)] = password
-        else:
-            self.config["key_passwords"].pop(str(conn_id), None)
-        self._save_config()
-
     def get_key_password(self, conn_id):
         """Get the SSH key password for a connection."""
         return self.config["key_passwords"].get(str(conn_id))
 
-    def set_password(self, conn_id, password):
-        self.config["passwords"][str(conn_id)] = password
-        self._save_config()
-
     def get_password(self, conn_id):
         return self.config["passwords"].get(str(conn_id), "")
 
-    def remove_connection_config(self, conn_id):
-        """Remove all configuration entries for a connection."""
+    def get_rdp_credentials(self, conn_id):
+        """Get RDP credentials for a connection."""
         conn_id = str(conn_id)
-        self.config["passwords"].pop(conn_id, None)
-        self.config["key_paths"].pop(conn_id, None)
-        self.config["key_passwords"].pop(conn_id, None)
+        creds = self.config["rdp_credentials"].get(conn_id, {})
+        return creds.get("username"), creds.get("password")
+
+    def remove_connection_config(self, conn_id):
+        """Remove all configuration data for a connection."""
+        str_id = str(conn_id)
+        # Remove from all sections, ignore if not found
+        self.config.get('passwords', {}).pop(str_id, None)
+        self.config.get('key_paths', {}).pop(str_id, None)
+        self.config.get('key_passwords', {}).pop(str_id, None)
+        self.config.get('rdp_credentials', {}).pop(str_id, None)
         self._save_config()
+
+    def delete_connection_data(self, conn_id):
+        """Delete all stored data for a connection."""
+        self.remove_connection_config(conn_id)
