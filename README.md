@@ -28,6 +28,9 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
+# Install dependencies on windows without WSL install windows-curses
+pip install windows-curses
+
 # Install module to PATH
 pip install -e .
 ```
