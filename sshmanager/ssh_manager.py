@@ -42,27 +42,48 @@ class SSHConnectionManager:
     def show_error(self, message):
         """Show an error message in red."""
         max_y = self.stdscr.getmaxyx()[0]
-        self.stdscr.addstr(max_y-1, 0, message, curses.color_pair(1))
+        self.stdscr.addstr(max_y-2, 0, message, curses.color_pair(1))
         self.stdscr.refresh()
         self.stdscr.getch()
-        self.stdscr.move(max_y-1, 0)
+        self.stdscr.move(max_y-2, 0)
         self.stdscr.clrtoeol()
 
     def setup_db_connection(self):
-        max_x = self.stdscr.getmaxyx()[1]
+        max_y, max_x = self.stdscr.getmaxyx()
         db_config = self.config.config["db"].copy()
         
         if not db_config["server"]:
-            self.stdscr.clear()
-            self.stdscr.addstr(0, 0, "Select database type:\n1. MSSQL\n2. PostgreSQL")
-            self.stdscr.refresh()
+            options = [
+                ("MSSQL", "Microsoft SQL Server"),
+                ("PostgreSQL", "PostgreSQL Database")
+            ]
+            selected = 0
+            
             while True:
+                self.stdscr.clear()
+                heading = "Select Database Type".center(max_x)[:max_x-1]
+                self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+                
+                # Display options
+                for i, (text, desc) in enumerate(options):
+                    self.stdscr.addstr(2 + i * 2, 2, text,
+                                     curses.A_REVERSE if i == selected else curses.A_NORMAL)
+                    self.stdscr.addstr(3 + i * 2, 4, desc, curses.A_DIM)
+                
+                # Display instructions
+                try:
+                    self.stdscr.addstr(max_y - 1, 0, "↑↓: Select  Enter: Choose", curses.A_REVERSE)
+                except curses.error:
+                    pass
+                self.stdscr.refresh()
+                
                 key = self.stdscr.getch()
-                if key == ord('1'):
-                    db_type = "mssql"
-                    break
-                elif key == ord('2'):
-                    db_type = "postgres"
+                if key == curses.KEY_UP and selected > 0:
+                    selected -= 1
+                elif key == curses.KEY_DOWN and selected < len(options) - 1:
+                    selected += 1
+                elif key == 10:  # Enter
+                    db_type = "mssql" if selected == 0 else "postgres"
                     break
             
             self.stdscr.clear()
@@ -90,7 +111,7 @@ class SSHConnectionManager:
         self.ui.connections = self.db.connections
         self.ui._build_folder_structure()
 
-    def handle_auth_config(self, conn, is_new=False):
+    def handle_auth_config(self, conn, is_new=False, initial_ssh_auth_type=None):
         """Handle authentication configuration for a connection."""
         max_y, max_x = self.stdscr.getmaxyx()
 
@@ -109,19 +130,22 @@ class SSHConnectionManager:
             if not is_new and 'id' in conn:
                 current_username, current_password = self.config.get_rdp_credentials(conn['id'])
             
-            self.stdscr.addstr(2, 0, f"Username ({current_username}): ")
-            username = self.ui.get_input(2, 10, f"Username ({current_username}): ") or current_username or ""
+            self.stdscr.addstr(2, 0, f"Username ({current_username if not is_new else 'None'}): ")
+            username = self.ui.get_input(2, 10, f"Username ({current_username if not is_new else 'None'}): ") or current_username or ""
             
-            self.stdscr.addstr(3, 0, "Password (current): ")
-            password = self.ui.get_input(3, 10, "Password (current): ", True) or current_password or ""
+            self.stdscr.addstr(3, 0, f"Password ({'current' if not is_new else 'None'}): ")
+            password = self.ui.get_input(3, 10, f"Password ({'current' if not is_new else 'None'}): ", True) or current_password or ""
             
+            log_debug(f"Saving RDP credentials for {username}")
             # Store credentials after connection is saved
             conn['_rdp_creds'] = (username, password)
             
             return 'password'  # Always password for RDP
         else:
             # For SSH connections, use the existing auth type selector
-            auth_type = self.ui.select_auth_type(current_type=conn.get('auth_type') if not is_new else None)
+            auth_type = initial_ssh_auth_type
+            if not auth_type:
+                auth_type = self.ui.select_auth_type(current_type=conn.get('auth_type') if not is_new else None)
             
             if auth_type == "key":
                 # Handle SSH key configuration
@@ -216,8 +240,11 @@ class SSHConnectionManager:
                 self.stdscr.clear()
                 heading = "Password Configuration".center(max_x)[:max_x-1]
                 self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
-                
-                has_password = False if is_new else self.config.get_password(conn['id']) is not None
+                has_password = False
+                if not has_password and not is_new:
+                    password = self.config.get_password(conn['id'])
+                    if password:
+                        has_password = True
                 self.stdscr.addstr(2, 0, "Current status:")
                 self.stdscr.addstr(3, 0, "  Password is " + ("set" if has_password else "not set"), 
                                  curses.A_DIM)
@@ -438,8 +465,10 @@ class SSHConnectionManager:
                 
                 # Save the connection
                 self.db.save_connection(conn_data)
+                log_debug("abc")
                 
                 # Now that we have the connection ID, save any credentials
+                log_debug(f"RDP creds should be here: {conn_data}")
                 if '_rdp_creds' in conn_data:
                     username, password = conn_data.pop('_rdp_creds')
                     if username and password:
@@ -488,7 +517,15 @@ class SSHConnectionManager:
 
                     auth_type = self.handle_auth_config(conn_data, is_new=False)
                     conn_data["auth_type"] = auth_type
-
+                    if '_rdp_creds' in conn_data:
+                        username, password = conn_data.pop('_rdp_creds')
+                        if username and password:
+                            self.config.set_rdp_credentials(conn_data['id'], username, password)
+                    if '_key_path' in conn_data:
+                        self.config.set_key_path(conn_data['id'], conn_data.pop('_key_path'))
+                    if '_password' in conn_data:
+                        self.config.set_password(conn_data['id'], conn_data.pop('_password'))
+                    
                     # Save the updated connection
                     self.db.save_connection(conn_data)
                     self.refresh_ui()
@@ -538,10 +575,37 @@ class SSHConnectionManager:
                 conn = self.ui.get_selected_connection()
                 if conn:
                     if conn.get('type', 'ssh') == 'rdp':
+                        # Check for RDP credentials
+                        username, password = self.config.get_rdp_credentials(conn['id'])
+                        if not username or not password:
+                            # Show RDP credentials screen
+                            auth_type = self.handle_auth_config(conn, is_new=False)
+                            if '_rdp_creds' in conn:
+                                username, password = conn.pop('_rdp_creds')
+                                if username and password:
+                                    self.config.set_rdp_credentials(conn['id'], username, password)
+                        
                         success, message = self.rdp.connect(conn)
                         if not success:
                             self.show_error(message)
                     else:
+                        # Check SSH auth requirements
+                        if conn['auth_type'] == 'key':
+                            key_path = self.config.get_key_path(conn['id'])
+                            log_debug(f"Key path: {key_path}")
+                            if not key_path:
+                                # Show SSH key selection screen
+                                auth_type = self.handle_auth_config(conn, is_new=False, initial_ssh_auth_type='key')
+                                if '_key_path' in conn:
+                                    self.config.set_key_path(conn['id'], conn.pop('_key_path'))
+                        elif conn['auth_type'] == 'password':
+                            password = self.config.get_password(conn['id'])
+                            if not password:
+                                # Show password screen
+                                auth_type = self.handle_auth_config(conn, is_new=False, initial_ssh_auth_type='password')
+                                if '_password' in conn:
+                                    self.config.set_password(conn['id'], conn.pop('_password'))
+                        
                         try:
                             self.ssh.connect(conn, self.stdscr)
                         except Exception as e:

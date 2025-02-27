@@ -232,9 +232,12 @@ class Config:
         for section in sections:
             self._ensure_section(section)
 
-    def get_key_path(self, conn_id):
+    def get_key_path(self, conn_id, with_default=True):
         """Get the SSH key path for a connection."""
-        return self.config["key_paths"].get(str(conn_id), os.path.join(HOME_DIR, ".ssh", "id_rsa"))
+        if with_default:
+            return self.config["key_paths"].get(str(conn_id), os.path.join(HOME_DIR, ".ssh", "id_rsa"))
+        else:
+            return self.config["key_paths"].get(str(conn_id), None)
 
     def get_key_password(self, conn_id):
         """Get the SSH key password for a connection."""

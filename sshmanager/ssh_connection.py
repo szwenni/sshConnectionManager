@@ -78,6 +78,7 @@ class SSHConnection:
 
     def connect(self, conn_data, stdscr=None):
         """Establish SSH connection and start interactive session."""
+        inner_exception = None
         try:
             if stdscr:
                 stdscr.clear()
@@ -98,6 +99,7 @@ class SSHConnection:
 
         except Exception as e:
             error_msg = f"Connection failed: {str(e)}"
+            inner_exception = e
             if stdscr:
                 # If we're in curses mode, properly exit before showing error
                 curses.endwin()
@@ -114,6 +116,8 @@ class SSHConnection:
                 stdscr.keypad(True)
                 stdscr.clear()
                 stdscr.refresh()
+        if inner_exception:
+            raise inner_exception
 
     def _start_ssh_session(self, conn_data, stdscr=None):
         """Start an interactive SSH session."""
