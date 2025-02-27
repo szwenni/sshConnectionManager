@@ -391,8 +391,11 @@ class SSHConnectionManager:
                     
                     new_name = self.ui.get_input(4, 0, f"Name ({conn['name']}): ")
                     new_ip = self.ui.get_input(5, 0, f"IP ({conn['ip']}): ")
-                    new_username = self.ui.get_input(6, 0, f"Username ({conn['username']}): ")
-                    new_port = self.ui.get_input(7, 0, f"Port ({conn.get('port', 22)}): ")
+                    new_username = None
+                    new_port = None
+                    if conn.get("type", "ssh") == "ssh":
+                        new_username = self.ui.get_input(6, 0, f"Username ({conn['username']}): ")
+                        new_port = self.ui.get_input(7, 0, f"Port ({conn.get('port', 22)}): ")
                     
                     # Update the connection data
                     conn_data = conn.copy()
