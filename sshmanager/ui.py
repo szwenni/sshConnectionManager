@@ -225,7 +225,7 @@ class UI:
                 self.stdscr.addstr(max_y - 1, 0, search_prompt[:max_x - 1], curses.A_REVERSE)
             else:
                 # Display menu
-                menu_text = "q:Quit  /:Search  a:Add  e:Edit  d:Delete  m:Master Key  Tab:Switch Type"
+                menu_text = "q:Quit  ^F|/:Search  a:Add  e:Edit  d:Delete  m:Master Key  Tab:Switch Type"
                 if self.current_type == 'rdp':
                     menu_text += "  p:Passwords"
                 padded_menu = menu_text.center(max_x - 1)[:max_x - 1]  # Leave last character
@@ -241,6 +241,7 @@ class UI:
 
     def handle_search_input(self, char):
         """Handle input while in search mode."""
+        log_debug(char)
         if char == 27:  # Escape
             self.search_mode = False
             self.search_term = ""
@@ -248,7 +249,7 @@ class UI:
         elif char == 10:  # Enter
             self.search_mode = False
             return True
-        elif char == curses.KEY_BACKSPACE or char == 127:  # Backspace
+        elif char == curses.KEY_BACKSPACE or char == 127 or char == 8:  # Backspace
             self.search_term = self.search_term[:-1]
             return True
         elif 32 <= char <= 126:  # Printable characters

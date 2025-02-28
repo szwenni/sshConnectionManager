@@ -28,6 +28,7 @@ class Config:
         self.is_encrypted = False
         self._ensure_salt()
         self.load_config()
+        self.masterkey = None
         
         # Initialize all sections if they don't exist
         if 'master_key' not in self.config:
@@ -67,7 +68,9 @@ class Config:
         if not password:
             self.fernet = None
             self.is_encrypted = False
+            self.masterkey = None
         else:
+            self.masterkey = password
             key = self._derive_key(password)
             self.fernet = Fernet(key)
             self.is_encrypted = True
@@ -118,6 +121,7 @@ class Config:
                     encrypted_data = f.read()
                 decrypted_data = self.fernet.decrypt(encrypted_data)
                 self.config = json.loads(decrypted_data)
+                self.masterkey = password
                 return True
             else:
                 self.is_encrypted = False  # Explicitly set to false for unencrypted config
