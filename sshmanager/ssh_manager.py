@@ -5,6 +5,12 @@ from .ssh_connection import SSHConnection
 from .rdp_connection import RDPConnection
 from .ui import UI
 import os
+import argparse
+import sys
+import platform
+import subprocess
+
+IS_WINDOWS = platform.system().lower() == "windows"
 
 class SSHConnectionManager:
     def __init__(self, stdscr):
@@ -397,7 +403,7 @@ class SSHConnectionManager:
             if key == ord('q'):  # Quit
                 break
             
-            elif key == ord('/'):  # Search
+            elif key == ord('/') or key == ord('F')-64:  # Search
                 self.ui.search_mode = True
                 self.ui.search_term = ""
             
@@ -607,7 +613,18 @@ class SSHConnectionManager:
                                     self.config.set_password(conn['id'], conn.pop('_password'))
                         
                         try:
-                            self.ssh.connect(conn, self.stdscr)
+			                # Windows-specific handling: spawn a new console
+                            if IS_WINDOWS:
+                                if self.config.is_config_encrypted():
+                                    subprocess.Popen(
+                                        ["wt", "-w", "0", "new-tab", "cmd.exe", "/k", "sshManager", "--server", conn["ip"], "--key", self.config.masterkey]
+                                    )
+                                else:
+                                    subprocess.Popen(
+                                        ["wt", "-w", "0", "new-tab", "cmd.exe", "/k", "sshManager", "--server", conn["ip"]]
+                                    )
+                            else:
+                                self.ssh.connect(conn, self.stdscr)
                         except Exception as e:
                             self.show_error(f"Connection failed: {str(e)}")
 
@@ -698,7 +715,7 @@ class SSHConnectionManager:
                             self.config.set_master_password(password)
                     break
                 elif action == "remove":
-                    self.config.disable_encryption()
+                    self.config.set_master_password(None)
                     break
             elif key == 27:  # Escape
                 break
@@ -711,8 +728,54 @@ def main(stdscr):
     manager.main_loop()
 
 def main_cli():
-    """Entry point for the CLI command."""
-    curses.wrapper(main)
+    parser = argparse.ArgumentParser(description="SSH Connection Manager")
+    parser.add_argument('--server', help="Server name to connect to directly")
+    parser.add_argument('--key', help="Master key if encryption is enabled")
+    args = parser.parse_args()
+
+    if args.server:
+        from sshmanager.config import Config
+        from sshmanager.ssh_connection import SSHConnection
+        from sshmanager.database import Database
+
+        config = Config()
+        if config.is_config_encrypted():
+            if args.key:
+                if not config.load_config(args.key):
+                    print(f"Invalid master key.")
+                    sys.exit(1)
+            else:
+                print(f"Encryption is active. Master key is required.")
+                sys.exit(1)
+        else:
+            config.load_config()  # load the config (handle master password if needed)
+
+        # Set up DB using the stored DB settings
+        db = Database(config.config["db"]["type"], config.config["db"])
+        db.load_connections()
+
+        # Find connection by IP
+        connection = None
+        for folder, connections in db.connections.items():
+            for conn in connections:
+                if conn["ip"].lower() == args.server.lower():
+                    connection = conn
+                    break
+            if connection:
+                break
+
+        if connection:
+            try:
+                SSHConnection(config).connect(connection)
+            except Exception as e:
+                print(f"Connection failed: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print(f"Server with IP '{args.server}' not found.", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # If no --server flag is provided, run the interactive UI.
+    	curses.wrapper(main)
 
 if __name__ == "__main__":
     curses.wrapper(main)
