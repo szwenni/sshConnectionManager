@@ -214,7 +214,7 @@ class SSHConnection:
                 curses.endwin()
 
             # Validate connection data
-            required_fields = ['ip', 'username', 'auth_type']
+            required_fields = ['ip', 'auth_type']
             for field in required_fields:
                 if field not in conn_data:
                     raise ValueError(f"Missing required field: {field}")
@@ -258,9 +258,11 @@ class SSHConnection:
             # Prepare connection parameters
             connect_params = {
                 'hostname': conn_data['ip'],
-                'username': conn_data['username'],
-                'port': conn_data.get('port', 22),  # Use port from connection data or default to 22
-                'timeout': 30,  # Add timeout to prevent hanging
+                'username': self.config.resolve_ssh_username(
+                    conn_data.get('id'), conn_data.get('username', "")
+                ),
+                'port': conn_data.get('port', 22),
+                'timeout': 30,
             }
 
             # Add authentication parameters

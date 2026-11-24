@@ -143,6 +143,33 @@ class SSHConnectionManager:
         self.ui.connections = self.db.connections
         self.ui._build_folder_structure()
 
+    def _prompt_ssh_local_username(self, conn, is_new=False):
+        """Optional local username override; empty keeps the database username."""
+        max_x = self.stdscr.getmaxyx()[1]
+        global_user = conn.get("username") or ""
+        global_display = global_user if global_user else "(empty)"
+        current_local = ""
+        if not is_new and conn.get("id") is not None:
+            current_local = self.config.get_ssh_username(conn["id"]) or ""
+
+        self.stdscr.clear()
+        heading = "SSH Username".center(max_x)[:max_x - 1]
+        safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
+        safe_addstr(self.stdscr, 2, 0, f"Global username (from connection): {global_display}")
+        safe_addstr(
+            self.stdscr, 3, 0,
+            "Leave local username empty to use the global value (even if global is empty).",
+            curses.A_DIM,
+        )
+        safe_addstr(
+            self.stdscr, 4, 0,
+            "Use a local username only when this machine should log in as someone else.",
+            curses.A_DIM,
+        )
+        local_hint = current_local if current_local else "empty = global"
+        local_value = self.ui.get_input(6, 0, f"Local username ({local_hint}): ")
+        conn["_ssh_username"] = (local_value or "").strip()
+
     def handle_auth_config(self, conn, is_new=False, initial_ssh_auth_type=None):
         """Handle authentication configuration for a connection."""
         max_y, max_x = self.stdscr.getmaxyx()
@@ -178,6 +205,8 @@ class SSHConnectionManager:
                 auth_type = self.ui.select_auth_type(current_type=conn.get('auth_type') if not is_new else None)
             if not auth_type:
                 return None
+
+            self._prompt_ssh_local_username(conn, is_new=is_new)
 
             if auth_type == "key":
                 # Handle SSH key configuration
@@ -506,15 +535,16 @@ class SSHConnectionManager:
                 if not conn_data["ip"]:
                     continue
                 
-                # Username only for SSH connections
+                # Username only for SSH connections; empty is allowed (personal account)
                 if conn_data["type"] == "ssh":
-                    safe_addstr(self.stdscr, 4, 0, "Username:")
-                    conn_data["username"] = self.ui.get_input(4, 10, "Username: ")
-                    if not conn_data["username"]:
-                        continue
+                    safe_addstr(
+                        self.stdscr, 4, 0,
+                        "Leave username empty if this is your personal account (e.g. not root).",
+                        curses.A_DIM,
+                    )
+                    conn_data["username"] = self.ui.get_input(5, 0, "Username: ") or ""
                     
-                    safe_addstr(self.stdscr, 5, 0, "Port (22):")
-                    port = self.ui.get_input(5, 11, "Port (22): ")
+                    port = self.ui.get_input(6, 0, "Port (22): ")
                     conn_data["port"] = self._parse_port(port, 22)
                 else:
                     conn_data["username"] = ""
@@ -542,6 +572,8 @@ class SSHConnectionManager:
                     self.config.set_key_path(conn_data['id'], conn_data.pop('_key_path'))
                 if '_password' in conn_data:
                     self.config.set_password(conn_data['id'], conn_data.pop('_password'))
+                if '_ssh_username' in conn_data:
+                    self.config.set_ssh_username(conn_data['id'], conn_data.pop('_ssh_username'))
                 
                 self.refresh_ui()
                 # Reset selection to first connection after adding
@@ -564,8 +596,14 @@ class SSHConnectionManager:
                     new_username = None
                     new_port = None
                     if conn.get("type", "ssh") == "ssh":
-                        new_username = self.ui.get_input(6, 0, f"Username ({conn['username']}): ")
-                        new_port = self.ui.get_input(7, 0, f"Port ({conn.get('port', 22)}): ")
+                        current_user = conn.get("username") or "empty"
+                        safe_addstr(
+                            self.stdscr, 6, 0,
+                            "Leave username empty to keep current. Empty is allowed for a personal account (e.g. not root).",
+                            curses.A_DIM,
+                        )
+                        new_username = self.ui.get_input(7, 0, f"Username ({current_user}): ")
+                        new_port = self.ui.get_input(8, 0, f"Port ({conn.get('port', 22)}): ")
                     
                     # Update the connection data
                     conn_data = conn.copy()
@@ -591,6 +629,8 @@ class SSHConnectionManager:
                         self.config.set_key_path(conn_data['id'], conn_data.pop('_key_path'))
                     if '_password' in conn_data:
                         self.config.set_password(conn_data['id'], conn_data.pop('_password'))
+                    if '_ssh_username' in conn_data:
+                        self.config.set_ssh_username(conn_data['id'], conn_data.pop('_ssh_username'))
                     
                     # Save the updated connection
                     self.db.save_connection(conn_data)
@@ -660,6 +700,8 @@ class SSHConnectionManager:
                                     continue
                                 if '_key_path' in conn:
                                     self.config.set_key_path(conn['id'], conn.pop('_key_path'))
+                                if '_ssh_username' in conn:
+                                    self.config.set_ssh_username(conn['id'], conn.pop('_ssh_username'))
                         elif conn.get('auth_type') == 'password':
                             password = self.config.get_password(conn['id'])
                             if not password:
@@ -668,6 +710,8 @@ class SSHConnectionManager:
                                     continue
                                 if '_password' in conn:
                                     self.config.set_password(conn['id'], conn.pop('_password'))
+                                if '_ssh_username' in conn:
+                                    self.config.set_ssh_username(conn['id'], conn.pop('_ssh_username'))
                         
                         try:
                             self.ssh.connect(conn, self.stdscr)

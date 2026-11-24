@@ -23,7 +23,8 @@ class Config:
             "passwords": {},  # For SSH password auth
             "key_paths": {},  # For SSH key paths
             "key_passwords": {},  # For SSH key passwords
-            "rdp_credentials": {}  # For RDP credentials (overrides DB)
+            "rdp_credentials": {},  # For RDP credentials (overrides DB)
+            "usernames": {},  # Local SSH username overrides (per connection)
         }
         self.fernet = None
         self.is_encrypted = False
@@ -41,6 +42,8 @@ class Config:
             self.config['key_passwords'] = {}
         if 'rdp_credentials' not in self.config:
             self.config['rdp_credentials'] = {}
+        if 'usernames' not in self.config:
+            self.config['usernames'] = {}
 
     def _ensure_salt(self):
         """Ensure salt exists for key derivation."""
@@ -221,6 +224,7 @@ class Config:
         self.config.setdefault("key_paths", {})
         self.config.setdefault("key_passwords", {})
         self.config.setdefault("rdp_credentials", {})
+        self.config.setdefault("usernames", {})
         if "port" not in self.config.get("db", {}):
             self.config["db"]["port"] = "5432"
 
@@ -263,7 +267,7 @@ class Config:
 
     def _init_config(self):
         """Initialize config with all required sections."""
-        sections = ["master_key", "passwords", "key_paths", "key_passwords", "rdp_credentials"]
+        sections = ["master_key", "passwords", "key_paths", "key_passwords", "rdp_credentials", "usernames"]
         for section in sections:
             self._ensure_section(section)
 
@@ -281,6 +285,33 @@ class Config:
     def get_password(self, conn_id):
         return self.config["passwords"].get(str(conn_id), "")
 
+    def set_ssh_username(self, conn_id, username):
+        """Set a local SSH username override. Empty clears the override (use DB username)."""
+        conn_id = str(conn_id)
+        self._ensure_section("usernames")
+        username = (username or "").strip()
+        if username:
+            self.config["usernames"][conn_id] = username
+        else:
+            self.config["usernames"].pop(conn_id, None)
+        self._save_config()
+
+    def get_ssh_username(self, conn_id):
+        """Return the local SSH username override, or None if unset."""
+        if conn_id is None:
+            return None
+        value = self.config.get("usernames", {}).get(str(conn_id))
+        if value:
+            return value
+        return None
+
+    def resolve_ssh_username(self, conn_id, global_username=""):
+        """Local override if set, otherwise the database username (may be empty)."""
+        local = self.get_ssh_username(conn_id)
+        if local:
+            return local
+        return global_username or ""
+
     def get_rdp_credentials(self, conn_id):
         """Get RDP credentials for a connection."""
         conn_id = str(conn_id)
@@ -295,6 +326,7 @@ class Config:
         self.config.get('key_paths', {}).pop(str_id, None)
         self.config.get('key_passwords', {}).pop(str_id, None)
         self.config.get('rdp_credentials', {}).pop(str_id, None)
+        self.config.get('usernames', {}).pop(str_id, None)
         self._save_config()
 
     def delete_connection_data(self, conn_id):

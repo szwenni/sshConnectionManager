@@ -1,4 +1,3 @@
-import pyodbc
 import psycopg2
 from typing import Dict, List
 from datetime import datetime
@@ -12,6 +11,20 @@ MSSQL_DRIVERS = (
     "ODBC Driver 13 for SQL Server",
     "SQL Server",
 )
+
+MSSQL_IMPORT_ERROR = (
+    "MSSQL support needs pyodbc and unixODBC (libodbc.so.2). "
+    "On Debian/Ubuntu/WSL: sudo apt install unixodbc. "
+    "Then: pip install pyodbc. Use PostgreSQL if you do not need MSSQL."
+)
+
+
+def _import_pyodbc():
+    try:
+        import pyodbc
+        return pyodbc
+    except ImportError as e:
+        raise ImportError(MSSQL_IMPORT_ERROR) from e
 
 
 def log_debug(message: str):
@@ -33,6 +46,7 @@ class Database:
 
     def get_db_connection(self):
         if self.db_type == "mssql":
+            pyodbc = _import_pyodbc()
             last_error = None
             server = self.db_config['server']
             port = self.db_config.get('port')
