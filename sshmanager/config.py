@@ -9,6 +9,7 @@ HOME_DIR = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(HOME_DIR, ".sshConnectionManager")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 SALT_FILE = os.path.join(CONFIG_DIR, ".salt")
+LOG_FILE = os.path.join(CONFIG_DIR, "log")
 
 # Old config files
 OLD_DB_CONFIG_FILE = os.path.join(CONFIG_DIR, "db_config.json")

@@ -4,7 +4,7 @@ from typing import Dict, List
 from datetime import datetime
 import os
 
-LOG_FILE = os.path.join(os.getcwd(), "ssh_manager_debug.log")
+from .config import CONFIG_DIR, LOG_FILE
 
 MSSQL_DRIVERS = (
     "ODBC Driver 18 for SQL Server",
@@ -16,6 +16,7 @@ MSSQL_DRIVERS = (
 
 def log_debug(message: str):
     try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
         with open(LOG_FILE, 'a', encoding='utf-8') as f:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             f.write(f"[{timestamp}] {message}\n")
