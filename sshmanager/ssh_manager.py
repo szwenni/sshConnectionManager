@@ -376,80 +376,86 @@ class SSHConnectionManager:
             
             return auth_type
 
+    def _connection_login_username(self, conn):
+        """Login username used for a connection (RDP creds or resolved SSH username)."""
+        if conn.get('type') == 'rdp':
+            username, _ = self.config.get_rdp_credentials(conn['id'])
+            return username or ""
+        return self.config.resolve_ssh_username(conn.get('id'), conn.get('username') or "")
+
     def handle_credentials_manager(self):
-        """Handle RDP credentials management."""
-        # Get unique usernames from existing RDP connections
+        """Bulk-update stored passwords for a login username across SSH and RDP."""
         usernames = set()
-        for folder, connections in self.db.connections.items():
+        for connections in self.db.connections.values():
             for conn in connections:
-                if conn.get('type') == 'rdp':
-                    username, _ = self.config.get_rdp_credentials(conn['id'])
-                    if username:
-                        usernames.add(username)
-        
+                username = self._connection_login_username(conn)
+                if username:
+                    usernames.add(username)
+
         if not usernames:
-            self.show_error("No RDP credentials found")
+            self.show_error("No usernames with stored credentials found")
             return
-            
-        # Convert to sorted list
-        usernames = sorted(list(usernames))
+
+        usernames = sorted(usernames)
         selected = 0
-        
+
         while True:
             self.stdscr.clear()
             max_y, max_x = self.stdscr.getmaxyx()
-            
-            # Display header
-            heading = "RDP Credentials".center(max_x - 1)[:max_x - 1]
+
+            heading = "Password Manager".center(max_x - 1)[:max_x - 1]
             safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
-            
-            # Display usernames
+            safe_addstr(
+                self.stdscr, 1, 0,
+                "Updates SSH and RDP passwords for the selected username",
+                curses.A_DIM,
+            )
+
             for i, username in enumerate(usernames):
-                if i >= max_y - 4:  # Leave space for instructions
+                if i >= max_y - 4:
                     break
-                safe_addstr(self.stdscr, i + 2, 2, username, 
-                                 curses.A_REVERSE if i == selected else curses.A_NORMAL)
-            
-            # Display instructions
+                safe_addstr(
+                    self.stdscr, i + 3, 2, username,
+                    curses.A_REVERSE if i == selected else curses.A_NORMAL,
+                )
+
             try:
-                safe_addstr(self.stdscr, max_y - 1, 0, "↑↓: Select  Enter: Change Password  Esc: Back"[:max_x - 1],
-                                 curses.A_REVERSE)
+                safe_addstr(
+                    self.stdscr, max_y - 1, 0,
+                    "↑↓: Select  Enter: Change Password  Esc: Back"[:max_x - 1],
+                    curses.A_REVERSE,
+                )
             except curses.error:
-                pass  # Ignore if we can't write to the last line
-            
+                pass
+
             self.stdscr.refresh()
-            
-            # Handle input
+
             key = self.stdscr.getch()
-            
+
             if key == curses.KEY_UP and selected > 0:
                 selected -= 1
             elif key == curses.KEY_DOWN and selected < len(usernames) - 1:
                 selected += 1
-            elif key == 27:  # Escape
+            elif key == 27:
                 break
             elif key in ENTER_KEYS:
                 username = usernames[selected]
-                
-                # Get new password
                 prompt = f"Enter new password for {username}: "
-                #safe_addstr(self.stdscr, max_y - 3, 0, prompt)
-                #self.stdscr.refresh()
                 new_password = self.ui.get_input(max_y - 2, 0, prompt, hidden=True)
-                
+
                 if new_password:
-                    # Update all RDP connections with this username
                     updated = 0
-                    for folder, connections in self.db.connections.items():
+                    for connections in self.db.connections.values():
                         for conn in connections:
+                            if self._connection_login_username(conn) != username:
+                                continue
                             if conn.get('type') == 'rdp':
-                                current_username, _ = self.config.get_rdp_credentials(conn['id'])
-                                if current_username == username:
-                                    self.config.set_rdp_credentials(conn['id'], username, new_password)
-                                    updated += 1
-                        
-                    #self.show_message(f"Password updated for {updated} connection(s)")
-                    return  # Exit after update
+                                self.config.set_rdp_credentials(conn['id'], username, new_password)
+                            else:
+                                self.config.set_password(conn['id'], new_password)
+                            updated += 1
+                    self.show_error(f"Password updated for {updated} connection(s)")
+                    return
                 break
 
     def _parse_port(self, value, default=22):
@@ -718,10 +724,9 @@ class SSHConnectionManager:
                         except Exception as e:
                             self.show_error(f"Connection failed: {str(e)}")
 
-            elif key == ord('p'):  # Password manager (RDP only)
-                if self.ui.current_type == 'rdp':
-                    self.handle_credentials_manager()
-                    self.refresh_ui()
+            elif key == ord('p'):  # Password manager (SSH and RDP)
+                self.handle_credentials_manager()
+                self.refresh_ui()
 
     def set_master_password(self):
         """Set or change the master password."""

@@ -244,9 +244,7 @@ class UI:
                 self.addstr(max_y - 1, 0, search_prompt[:max_x - 1], curses.A_REVERSE)
             else:
                 # Display menu
-                menu_text = "q:Quit  /:Search  a:Add  e:Edit  d:Delete  m:Master Key  Tab:Switch Type"
-                if self.current_type == 'rdp':
-                    menu_text += "  p:Passwords"
+                menu_text = "q:Quit  /:Search  a:Add  e:Edit  d:Delete  m:Master Key  Tab:Switch Type  p:Passwords"
                 padded_menu = menu_text.center(max_x - 1)[:max_x - 1]  # Leave last character
                 self.addstr(max_y - 1, 0, padded_menu, curses.A_REVERSE)
         except curses.error:

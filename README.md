@@ -49,7 +49,7 @@ sshManager
 - `e`: Edit connection
 - `d`: Delete connection
 - `Tab`: Toggle SSH/RDP mode
-- `p`: RDP password manager (in RDP mode)
+- `p`: Password manager (bulk-update SSH and RDP passwords by username)
 - `/`: Search
 - `Enter` / `c`: Connect
 - `m`: Master key / config encryption
