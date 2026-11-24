@@ -1,15 +1,23 @@
 import curses
 from .config import Config
 from .database import Database, log_debug
-from .ssh_connection import SSHConnection
+from .ssh_connection import SSHConnection, generate_ssh_key
 from .rdp_connection import RDPConnection
-from .ui import UI
+from .ui import UI, safe_addstr, ENTER_KEYS
 import os
 
 class SSHConnectionManager:
     def __init__(self, stdscr):
         self.stdscr = stdscr
-        curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+        except curses.error:
+            pass
+        try:
+            curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
+        except curses.error:
+            pass
         self.config = Config()
         
         # Check if config is encrypted and get master password
@@ -21,7 +29,8 @@ class SSHConnectionManager:
                 self.show_error("Invalid master password")
                 self.stdscr.clear()
         else:
-            self.config.load_config()
+            if not self.config.load_config():
+                self.show_error("Could not read config file; using defaults")
             
         self.db = self.setup_db_connection()
         self.ssh = SSHConnection(self.config)
@@ -31,22 +40,33 @@ class SSHConnectionManager:
     def get_input(self, y, x, prompt="", hidden=False):
         self.stdscr.move(y, 0)
         self.stdscr.clrtoeol()
-        self.stdscr.addstr(y, 0, prompt)
+        safe_addstr(self.stdscr, y, 0, prompt)
         curses.echo(not hidden)
         self.stdscr.move(y, len(prompt))
         self.stdscr.refresh()
-        input_str = self.stdscr.getstr(y, len(prompt)).decode('utf-8')
-        curses.noecho()
-        return input_str
+        try:
+            raw = self.stdscr.getstr(y, len(prompt))
+            return raw.decode('utf-8', errors='replace')
+        except (curses.error, UnicodeDecodeError):
+            return ""
+        finally:
+            curses.noecho()
 
     def show_error(self, message):
         """Show an error message in red."""
-        max_y = self.stdscr.getmaxyx()[0]
-        self.stdscr.addstr(max_y-2, 0, message, curses.color_pair(1))
+        max_y, max_x = self.stdscr.getmaxyx()
+        try:
+            attr = curses.color_pair(1)
+        except curses.error:
+            attr = curses.A_REVERSE
+        safe_addstr(self.stdscr, max_y - 2, 0, str(message)[:max(0, max_x - 1)], attr)
         self.stdscr.refresh()
         self.stdscr.getch()
-        self.stdscr.move(max_y-2, 0)
-        self.stdscr.clrtoeol()
+        try:
+            self.stdscr.move(max_y - 2, 0)
+            self.stdscr.clrtoeol()
+        except curses.error:
+            pass
 
     def setup_db_connection(self):
         max_y, max_x = self.stdscr.getmaxyx()
@@ -62,17 +82,17 @@ class SSHConnectionManager:
             while True:
                 self.stdscr.clear()
                 heading = "Select Database Type".center(max_x)[:max_x-1]
-                self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+                safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
                 
                 # Display options
                 for i, (text, desc) in enumerate(options):
-                    self.stdscr.addstr(2 + i * 2, 2, text,
+                    safe_addstr(self.stdscr, 2 + i * 2, 2, text,
                                      curses.A_REVERSE if i == selected else curses.A_NORMAL)
-                    self.stdscr.addstr(3 + i * 2, 4, desc, curses.A_DIM)
+                    safe_addstr(self.stdscr, 3 + i * 2, 4, desc, curses.A_DIM)
                 
                 # Display instructions
                 try:
-                    self.stdscr.addstr(max_y - 1, 0, "↑↓: Select  Enter: Choose", curses.A_REVERSE)
+                    safe_addstr(self.stdscr, max_y - 1, 0, "↑↓: Select  Enter: Choose", curses.A_REVERSE)
                 except curses.error:
                     pass
                 self.stdscr.refresh()
@@ -82,28 +102,40 @@ class SSHConnectionManager:
                     selected -= 1
                 elif key == curses.KEY_DOWN and selected < len(options) - 1:
                     selected += 1
-                elif key == 10:  # Enter
+                elif key in ENTER_KEYS:
                     db_type = "mssql" if selected == 0 else "postgres"
                     break
             
-            self.stdscr.clear()
-            heading = f"Configure {db_type.upper()}".center(max_x)[:max_x-1]
-            self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
-            self.stdscr.addstr(2, 0, "Server: ")
-            db_config["server"] = self.get_input(2, 8, "Server: ")
-            self.stdscr.addstr(3, 0, "Database: ")
-            db_config["database"] = self.get_input(3, 10, "Database: ")
-            self.stdscr.addstr(4, 0, "Username: ")
-            db_config["username"] = self.get_input(4, 10, "Username: ")
-            self.stdscr.addstr(5, 0, "Password: ")
-            db_config["password"] = self.get_input(5, 10, "Password: ", True)
-            db_config["type"] = db_type
-            
-            # Save the DB config
-            self.config.config["db"] = db_config
-            self.config._save_config()
+            while True:
+                self.stdscr.clear()
+                heading = f"Configure {db_type.upper()}".center(max_x)[:max_x-1]
+                safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
+                safe_addstr(self.stdscr, 2, 0, "Server: ")
+                db_config["server"] = self.get_input(2, 8, "Server: ")
+                safe_addstr(self.stdscr, 3, 0, "Database: ")
+                db_config["database"] = self.get_input(3, 10, "Database: ")
+                safe_addstr(self.stdscr, 4, 0, "Username: ")
+                db_config["username"] = self.get_input(4, 10, "Username: ")
+                safe_addstr(self.stdscr, 5, 0, "Password: ")
+                db_config["password"] = self.get_input(5, 10, "Password: ", True)
+                db_config["type"] = db_type
+                if db_type == "postgres":
+                    db_config["port"] = db_config.get("port") or "5432"
+
+                self.config.config["db"] = db_config
+                self.config._save_config()
+                try:
+                    return Database(db_config["type"], db_config)
+                except Exception as e:
+                    self.show_error(f"Database connection failed: {e}")
+                    continue
         
-        return Database(db_config["type"], db_config)
+        try:
+            return Database(db_config["type"], db_config)
+        except Exception as e:
+            self.show_error(f"Database connection failed: {e}")
+            db_config["server"] = ""
+            return self.setup_db_connection()
 
     def refresh_ui(self):
         """Refresh the UI after connection changes."""
@@ -122,7 +154,7 @@ class SSHConnectionManager:
             # RDP only supports password auth
             self.stdscr.clear()
             heading = "RDP Credentials".center(max_x)[:max_x-1]
-            self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+            safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
             
             # Get current credentials if editing
             current_username = ""
@@ -130,14 +162,12 @@ class SSHConnectionManager:
             if not is_new and 'id' in conn:
                 current_username, current_password = self.config.get_rdp_credentials(conn['id'])
             
-            self.stdscr.addstr(2, 0, f"Username ({current_username if not is_new else 'None'}): ")
+            safe_addstr(self.stdscr, 2, 0, f"Username ({current_username if not is_new else 'None'}): ")
             username = self.ui.get_input(2, 10, f"Username ({current_username if not is_new else 'None'}): ") or current_username or ""
             
-            self.stdscr.addstr(3, 0, f"Password ({'current' if not is_new else 'None'}): ")
+            safe_addstr(self.stdscr, 3, 0, f"Password ({'current' if not is_new else 'None'}): ")
             password = self.ui.get_input(3, 10, f"Password ({'current' if not is_new else 'None'}): ", True) or current_password or ""
             
-            log_debug(f"Saving RDP credentials for {username}")
-            # Store credentials after connection is saved
             conn['_rdp_creds'] = (username, password)
             
             return 'password'  # Always password for RDP
@@ -146,25 +176,27 @@ class SSHConnectionManager:
             auth_type = initial_ssh_auth_type
             if not auth_type:
                 auth_type = self.ui.select_auth_type(current_type=conn.get('auth_type') if not is_new else None)
-            
+            if not auth_type:
+                return None
+
             if auth_type == "key":
                 # Handle SSH key configuration
                 self.stdscr.clear()
                 heading = "SSH Key Configuration".center(max_x)[:max_x-1]
-                self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+                safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
                 
                 current_key = None if is_new else self.config.get_key_path(conn['id'])
-                self.stdscr.addstr(2, 0, "Current SSH key path:")
+                safe_addstr(self.stdscr, 2, 0, "Current SSH key path:")
                 if current_key:
                     expanded_path = os.path.expanduser(current_key)
-                    self.stdscr.addstr(3, 2, expanded_path, curses.A_DIM)
+                    safe_addstr(self.stdscr, 3, 2, expanded_path, curses.A_DIM)
                     if expanded_path != current_key:
-                        self.stdscr.addstr(4, 2, f"→ {expanded_path}", curses.A_DIM)
+                        safe_addstr(self.stdscr, 4, 2, f"→ {expanded_path}", curses.A_DIM)
                 else:
                     default_path = "~/.ssh/id_rsa"
                     expanded_default = os.path.expanduser(default_path)
-                    self.stdscr.addstr(3, 2, f"{default_path} (default)", curses.A_DIM)
-                    self.stdscr.addstr(4, 2, f"→ {expanded_default}", curses.A_DIM)
+                    safe_addstr(self.stdscr, 3, 2, f"{default_path} (default)", curses.A_DIM)
+                    safe_addstr(self.stdscr, 4, 2, f"→ {expanded_default}", curses.A_DIM)
                 
                 # Show key options
                 options = []
@@ -190,15 +222,15 @@ class SSHConnectionManager:
                     for i, (_, text, desc) in enumerate(options):
                         if y >= max_y - 4:
                             break
-                        self.stdscr.addstr(y, 2, text,
+                        safe_addstr(self.stdscr, y, 2, text,
                                          curses.A_REVERSE if selected == i else curses.A_NORMAL)
-                        self.stdscr.addstr(y + 1, 4, desc, curses.A_DIM)
+                        safe_addstr(self.stdscr, y + 1, 4, desc, curses.A_DIM)
                         y += 3
                     
                     # Display instructions
                     inst_y = max_y - 3
                     if inst_y > y:
-                        self.stdscr.addstr(inst_y, 0, "↑↓: Navigate  Enter: Select  Esc: Cancel", curses.A_DIM)
+                        safe_addstr(self.stdscr, inst_y, 0, "↑↓: Navigate  Enter: Select  Esc: Cancel", curses.A_DIM)
                     
                     self.stdscr.refresh()
                     
@@ -207,7 +239,7 @@ class SSHConnectionManager:
                         selected -= 1
                     elif key == curses.KEY_DOWN and selected < len(options) - 1:
                         selected += 1
-                    elif key == 10:  # Enter
+                    elif key in ENTER_KEYS:
                         action = options[selected][0]
                         if action == "keep":
                             return auth_type
@@ -220,18 +252,24 @@ class SSHConnectionManager:
                             if key_path:
                                 expanded_path = os.path.expanduser(key_path)
                                 if os.path.exists(expanded_path):
-                                    # Store the key path after connection is saved
                                     conn['_key_path'] = key_path
                                     return auth_type
+                                self.show_error(f"Key file not found: {expanded_path}")
                         elif action == "generate":
                             # Show key generation dialog
                             self.stdscr.clear()
                             heading = "Generate SSH Key".center(max_x)[:max_x-1]
-                            self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
-                            self.stdscr.addstr(2, 0, "This will create a new SSH key pair.")
-                            key_path = self.ui.get_input(4, 0, "Save to path (default: ~/.ssh/id_rsa): ") or "~/.ssh/id_rsa"
+                            safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
+                            safe_addstr(self.stdscr, 2, 0, "This will create a new SSH key pair.")
+                            key_path = self.ui.get_input(4, 0, "Save to path (default: ~/.ssh/id_ed25519): ") or "~/.ssh/id_ed25519"
                             if key_path:
-                                # Store the key path after connection is saved
+                                try:
+                                    generate_ssh_key(key_path)
+                                except FileExistsError:
+                                    pass
+                                except Exception as e:
+                                    self.show_error(f"Failed to generate key: {e}")
+                                    return None
                                 conn['_key_path'] = key_path
                                 return auth_type
                     elif key == 27:  # Escape
@@ -239,19 +277,19 @@ class SSHConnectionManager:
             else:  # password auth
                 self.stdscr.clear()
                 heading = "Password Configuration".center(max_x)[:max_x-1]
-                self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+                safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
                 has_password = False
                 if not has_password and not is_new:
                     password = self.config.get_password(conn['id'])
                     if password:
                         has_password = True
-                self.stdscr.addstr(2, 0, "Current status:")
-                self.stdscr.addstr(3, 0, "  Password is " + ("set" if has_password else "not set"), 
+                safe_addstr(self.stdscr, 2, 0, "Current status:")
+                safe_addstr(self.stdscr, 3, 0, "  Password is " + ("set" if has_password else "not set"), 
                                  curses.A_DIM)
                 
                 # Show security warning
                 y = 5
-                self.stdscr.addstr(y, 0, "⚠️  Note: Password auth is less secure than SSH keys", curses.A_DIM)
+                safe_addstr(self.stdscr, y, 0, "⚠️  Note: Password auth is less secure than SSH keys", curses.A_DIM)
                 y += 2
                 
                 # Show password options
@@ -273,15 +311,15 @@ class SSHConnectionManager:
                     for i, (_, text, desc) in enumerate(options):
                         if y >= max_y - 4:
                             break
-                        self.stdscr.addstr(y, 2, text,
+                        safe_addstr(self.stdscr, y, 2, text,
                                          curses.A_REVERSE if selected == i else curses.A_NORMAL)
-                        self.stdscr.addstr(y + 1, 4, desc, curses.A_DIM)
+                        safe_addstr(self.stdscr, y + 1, 4, desc, curses.A_DIM)
                         y += 3
                     
                     # Display instructions
                     inst_y = max_y - 3
                     if inst_y > y:
-                        self.stdscr.addstr(inst_y, 0, "↑↓: Navigate  Enter: Select  Esc: Cancel", curses.A_DIM)
+                        safe_addstr(self.stdscr, inst_y, 0, "↑↓: Navigate  Enter: Select  Esc: Cancel", curses.A_DIM)
                     
                     self.stdscr.refresh()
                     
@@ -290,7 +328,7 @@ class SSHConnectionManager:
                         selected -= 1
                     elif key == curses.KEY_DOWN and selected < len(options) - 1:
                         selected += 1
-                    elif key == 10:  # Enter
+                    elif key in ENTER_KEYS:
                         action = options[selected][0]
                         if action == "keep":
                             return auth_type
@@ -334,18 +372,18 @@ class SSHConnectionManager:
             
             # Display header
             heading = "RDP Credentials".center(max_x - 1)[:max_x - 1]
-            self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+            safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
             
             # Display usernames
             for i, username in enumerate(usernames):
                 if i >= max_y - 4:  # Leave space for instructions
                     break
-                self.stdscr.addstr(i + 2, 2, username, 
+                safe_addstr(self.stdscr, i + 2, 2, username, 
                                  curses.A_REVERSE if i == selected else curses.A_NORMAL)
             
             # Display instructions
             try:
-                self.stdscr.addstr(max_y - 1, 0, "↑↓: Select  Enter: Change Password  Esc: Back"[:max_x - 1],
+                safe_addstr(self.stdscr, max_y - 1, 0, "↑↓: Select  Enter: Change Password  Esc: Back"[:max_x - 1],
                                  curses.A_REVERSE)
             except curses.error:
                 pass  # Ignore if we can't write to the last line
@@ -361,12 +399,12 @@ class SSHConnectionManager:
                 selected += 1
             elif key == 27:  # Escape
                 break
-            elif key == 10:  # Enter
+            elif key in ENTER_KEYS:
                 username = usernames[selected]
                 
                 # Get new password
                 prompt = f"Enter new password for {username}: "
-                #self.stdscr.addstr(max_y - 3, 0, prompt)
+                #safe_addstr(self.stdscr, max_y - 3, 0, prompt)
                 #self.stdscr.refresh()
                 new_password = self.ui.get_input(max_y - 2, 0, prompt, hidden=True)
                 
@@ -385,26 +423,52 @@ class SSHConnectionManager:
                     return  # Exit after update
                 break
 
+    def _parse_port(self, value, default=22):
+        if not value:
+            return default
+        try:
+            port = int(value)
+            if 1 <= port <= 65535:
+                return port
+        except (TypeError, ValueError):
+            pass
+        self.show_error("Invalid port; using 22")
+        return default
+
     def main_loop(self):
         while True:
             max_y = self.stdscr.getmaxyx()[0]
             connections_count = self.ui.display_connections()
+            if self.ui.selected >= connections_count:
+                self.ui.selected = max(0, connections_count - 1)
+                connections_count = self.ui.display_connections()
             self.ui.display_menu(max_y)
             self.stdscr.refresh()
             
             key = self.stdscr.getch()
-            
+
+            if self.ui.search_mode:
+                if key == curses.KEY_UP:
+                    if self.ui.selected > 0:
+                        self.ui.selected -= 1
+                    continue
+                if key == curses.KEY_DOWN:
+                    if self.ui.selected < connections_count - 1:
+                        self.ui.selected += 1
+                    continue
+                if key in ENTER_KEYS:
+                    self.ui.search_mode = False
+                    continue
+                if self.ui.handle_search_input(key):
+                    self.ui.selected = 0
+                continue
+
             if key == ord('q'):  # Quit
                 break
             
             elif key == ord('/'):  # Search
                 self.ui.search_mode = True
                 self.ui.search_term = ""
-            
-            elif self.ui.search_mode and key != curses.KEY_UP and key != curses.KEY_DOWN and key != ord('\n'):
-                if self.ui.handle_search_input(key):
-                    self.ui.selected = 0  # Reset selection when search changes
-                    continue
             
             elif key == ord('m'):  # Master Key
                 self.set_master_password()
@@ -422,36 +486,36 @@ class SSHConnectionManager:
                 self.stdscr.clear()
                 max_x = self.stdscr.getmaxyx()[1]
                 heading = "Add New Connection".center(max_x)[:max_x-1]
-                self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+                safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
                 
                 # Interactive connection type selection first
                 conn_data = {}
                 conn_data["type"] = self.ui.select_connection_type(current_y=2)
                 
                 self.stdscr.clear()
-                self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+                safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
                 
                 # Get connection details
-                self.stdscr.addstr(2, 0, "Name:")
+                safe_addstr(self.stdscr, 2, 0, "Name:")
                 conn_data["name"] = self.ui.get_input(2, 6, "Name: ")
                 if not conn_data["name"]:
-                    return
+                    continue
                 
-                self.stdscr.addstr(3, 0, "IP/Host:")
+                safe_addstr(self.stdscr, 3, 0, "IP/Host:")
                 conn_data["ip"] = self.ui.get_input(3, 9, "IP/Host: ")
                 if not conn_data["ip"]:
-                    return
+                    continue
                 
                 # Username only for SSH connections
                 if conn_data["type"] == "ssh":
-                    self.stdscr.addstr(4, 0, "Username:")
+                    safe_addstr(self.stdscr, 4, 0, "Username:")
                     conn_data["username"] = self.ui.get_input(4, 10, "Username: ")
                     if not conn_data["username"]:
-                        return
+                        continue
                     
-                    self.stdscr.addstr(5, 0, "Port (22):")
+                    safe_addstr(self.stdscr, 5, 0, "Port (22):")
                     port = self.ui.get_input(5, 11, "Port (22): ")
-                    conn_data["port"] = int(port) if port else 22
+                    conn_data["port"] = self._parse_port(port, 22)
                 else:
                     conn_data["username"] = ""
                     conn_data["port"] = None
@@ -461,14 +525,15 @@ class SSHConnectionManager:
                 
                 # Handle authentication configuration
                 auth_type = self.handle_auth_config(conn_data, is_new=True)
+                if not auth_type:
+                    continue
                 conn_data["auth_type"] = auth_type
                 
                 # Save the connection
                 self.db.save_connection(conn_data)
-                log_debug("abc")
+                log_debug(f"Added connection {conn_data.get('name')}")
                 
                 # Now that we have the connection ID, save any credentials
-                log_debug(f"RDP creds should be here: {conn_data}")
                 if '_rdp_creds' in conn_data:
                     username, password = conn_data.pop('_rdp_creds')
                     if username and password:
@@ -489,10 +554,10 @@ class SSHConnectionManager:
                     self.stdscr.clear()
                     max_x = self.stdscr.getmaxyx()[1]
                     heading = "Edit Connection".center(max_x)[:max_x-1]
-                    self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+                    safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
                     
                     # Get basic connection info
-                    self.stdscr.addstr(2, 0, "Leave fields empty to keep current values")
+                    safe_addstr(self.stdscr, 2, 0, "Leave fields empty to keep current values")
                     
                     new_name = self.ui.get_input(4, 0, f"Name ({conn['name']}): ")
                     new_ip = self.ui.get_input(5, 0, f"IP ({conn['ip']}): ")
@@ -507,7 +572,7 @@ class SSHConnectionManager:
                     if new_name: conn_data["name"] = new_name
                     if new_ip: conn_data["ip"] = new_ip
                     if new_username: conn_data["username"] = new_username
-                    if new_port: conn_data["port"] = int(new_port)
+                    if new_port: conn_data["port"] = self._parse_port(new_port, conn.get("port", 22))
                     
                     # Interactive folder selection
                     new_folder = self.ui.select_folder(current_y=8, current_folder=conn['folder'], conn_type=conn_data["type"])
@@ -516,7 +581,8 @@ class SSHConnectionManager:
                         conn_data["folder"] = new_folder
 
                     auth_type = self.handle_auth_config(conn_data, is_new=False)
-                    conn_data["auth_type"] = auth_type
+                    if auth_type:
+                        conn_data["auth_type"] = auth_type
                     if '_rdp_creds' in conn_data:
                         username, password = conn_data.pop('_rdp_creds')
                         if username and password:
@@ -536,13 +602,13 @@ class SSHConnectionManager:
                     self.stdscr.clear()
                     max_x = self.stdscr.getmaxyx()[1]
                     heading = "Delete Connection".center(max_x)[:max_x-1]
-                    self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+                    safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
                     
                     # Show warning
-                    self.stdscr.addstr(2, 0, f"Are you sure you want to delete connection '{conn['name']}'?")
-                    self.stdscr.addstr(3, 0, "This will also remove any associated SSH keys and passwords.")
-                    self.stdscr.addstr(4, 0, "This action cannot be undone.")
-                    self.stdscr.addstr(6, 0, "Press 'y' to confirm, any other key to cancel.")
+                    safe_addstr(self.stdscr, 2, 0, f"Are you sure you want to delete connection '{conn['name']}'?")
+                    safe_addstr(self.stdscr, 3, 0, "This will also remove any associated SSH keys and passwords.")
+                    safe_addstr(self.stdscr, 4, 0, "This action cannot be undone.")
+                    safe_addstr(self.stdscr, 6, 0, "Press 'y' to confirm, any other key to cancel.")
                     self.stdscr.refresh()
                     
                     if self.stdscr.getch() == ord('y'):
@@ -563,15 +629,10 @@ class SSHConnectionManager:
                 if self.ui.selected > 0:
                     self.ui.selected -= 1
             elif key == curses.KEY_DOWN:
-                # Count only connections of current type
-                filtered_count = sum(
-                    len([c for c in conns if c.get('type', 'ssh') == self.ui.current_type])
-                    for conns in self.db.connections.values()
-                )
                 if self.ui.selected < connections_count - 1:
                     self.ui.selected += 1
             
-            elif key == ord('\n') or key == ord('c'):  # Connect
+            elif key in ENTER_KEYS or key == ord('c'):  # Connect
                 conn = self.ui.get_selected_connection()
                 if conn:
                     if conn.get('type', 'ssh') == 'rdp':
@@ -590,19 +651,21 @@ class SSHConnectionManager:
                             self.show_error(message)
                     else:
                         # Check SSH auth requirements
-                        if conn['auth_type'] == 'key':
+                        if conn.get('auth_type') == 'key':
                             key_path = self.config.get_key_path(conn['id'])
-                            log_debug(f"Key path: {key_path}")
-                            if not key_path:
-                                # Show SSH key selection screen
+                            expanded = os.path.expanduser(key_path) if key_path else ""
+                            if not key_path or not os.path.exists(expanded):
                                 auth_type = self.handle_auth_config(conn, is_new=False, initial_ssh_auth_type='key')
+                                if not auth_type:
+                                    continue
                                 if '_key_path' in conn:
                                     self.config.set_key_path(conn['id'], conn.pop('_key_path'))
-                        elif conn['auth_type'] == 'password':
+                        elif conn.get('auth_type') == 'password':
                             password = self.config.get_password(conn['id'])
                             if not password:
-                                # Show password screen
                                 auth_type = self.handle_auth_config(conn, is_new=False, initial_ssh_auth_type='password')
+                                if not auth_type:
+                                    continue
                                 if '_password' in conn:
                                     self.config.set_password(conn['id'], conn.pop('_password'))
                         
@@ -615,9 +678,6 @@ class SSHConnectionManager:
                 if self.ui.current_type == 'rdp':
                     self.handle_credentials_manager()
                     self.refresh_ui()
-                    
-            elif key == ord('q'):  # Quit
-                return
 
     def set_master_password(self):
         """Set or change the master password."""
@@ -626,12 +686,12 @@ class SSHConnectionManager:
         # Clear screen and show header
         self.stdscr.clear()
         heading = "Master Key Configuration".center(max_x)[:max_x-1]
-        self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+        safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
         
         # Show current status
         is_encrypted = self.config.is_config_encrypted()
-        self.stdscr.addstr(2, 0, "Current status:")
-        self.stdscr.addstr(3, 0, "  Config is " + ("encrypted" if is_encrypted else "not encrypted"), 
+        safe_addstr(self.stdscr, 2, 0, "Current status:")
+        safe_addstr(self.stdscr, 3, 0, "  Config is " + ("encrypted" if is_encrypted else "not encrypted"), 
                          curses.A_DIM)
         
         # Show options based on current state
@@ -653,15 +713,15 @@ class SSHConnectionManager:
             for i, (_, text, desc) in enumerate(options):
                 if y >= max_y - 4:
                     break
-                self.stdscr.addstr(y, 2, text,
+                safe_addstr(self.stdscr, y, 2, text,
                                  curses.A_REVERSE if selected == i else curses.A_NORMAL)
-                self.stdscr.addstr(y + 1, 4, desc, curses.A_DIM)
+                safe_addstr(self.stdscr, y + 1, 4, desc, curses.A_DIM)
                 y += 3
             
             # Display instructions
             inst_y = max_y - 3
             if inst_y > y:
-                self.stdscr.addstr(inst_y, 0, "↑↓: Navigate  Enter: Select  Esc: Cancel", curses.A_DIM)
+                safe_addstr(self.stdscr, inst_y, 0, "↑↓: Navigate  Enter: Select  Esc: Cancel", curses.A_DIM)
             
             self.stdscr.refresh()
             
@@ -670,7 +730,7 @@ class SSHConnectionManager:
                 selected -= 1
             elif key == curses.KEY_DOWN and selected < len(options) - 1:
                 selected += 1
-            elif key == 10:  # Enter
+            elif key in ENTER_KEYS:
                 action = options[selected][0]
                 if action == "keep":
                     break
@@ -678,12 +738,12 @@ class SSHConnectionManager:
                     # Get new password
                     self.stdscr.clear()
                     heading = "Set Master Key".center(max_x)[:max_x-1]
-                    self.stdscr.addstr(0, 0, heading, curses.A_REVERSE)
+                    safe_addstr(self.stdscr, 0, 0, heading, curses.A_REVERSE)
                     
                     # Add instructions
-                    self.stdscr.addstr(2, 0, "This will encrypt your configuration file with a master password.")
-                    self.stdscr.addstr(3, 0, "You will need to enter this password each time you start the program.")
-                    self.stdscr.addstr(4, 0, "Make sure to remember your password - there is no way to recover it!")
+                    safe_addstr(self.stdscr, 2, 0, "This will encrypt your configuration file with a master password.")
+                    safe_addstr(self.stdscr, 3, 0, "You will need to enter this password each time you start the program.")
+                    safe_addstr(self.stdscr, 4, 0, "Make sure to remember your password - there is no way to recover it!")
                     
                     # Get new password with proper spacing
                     password = self.ui.get_input(6, 0, "Enter new master password: ", True)

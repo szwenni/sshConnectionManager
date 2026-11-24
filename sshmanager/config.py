@@ -27,8 +27,8 @@ class Config:
         self.fernet = None
         self.is_encrypted = False
         self._ensure_salt()
-        self.load_config()
-        
+        # Manager calls load_config() (and prompts for the master password if needed).
+
         # Initialize all sections if they don't exist
         if 'master_key' not in self.config:
             self.config['master_key'] = None
@@ -36,6 +36,8 @@ class Config:
             self.config['passwords'] = {}
         if 'key_paths' not in self.config:
             self.config['key_paths'] = {}
+        if 'key_passwords' not in self.config:
+            self.config['key_passwords'] = {}
         if 'rdp_credentials' not in self.config:
             self.config['rdp_credentials'] = {}
 
@@ -45,6 +47,7 @@ class Config:
         if not os.path.exists(SALT_FILE):
             with open(SALT_FILE, 'wb') as f:
                 f.write(os.urandom(16))
+            self._protect_file(SALT_FILE)
 
     def _get_salt(self):
         """Get the salt for key derivation."""
@@ -84,21 +87,37 @@ class Config:
             self.fernet = fernet
             self.is_encrypted = True  # Set encryption state when password is correct
             return True
-        except:
+        except Exception:
             return False
+
+    def _protect_file(self, path):
+        """Best-effort: owner-only permissions on POSIX."""
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
     def is_config_encrypted(self) -> bool:
         """Check if config file is encrypted."""
         if not os.path.exists(CONFIG_FILE):
             return False
         try:
-            with open(CONFIG_FILE, 'r') as f:
-                json.load(f)
+            with open(CONFIG_FILE, 'rb') as f:
+                data = f.read()
+            if not data:
+                return False
+            json.loads(data.decode('utf-8'))
             return False
-        except json.JSONDecodeError:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             return True
-        except:
+        except OSError:
             return False
+
+    def disable_encryption(self):
+        """Write the in-memory config back as plaintext JSON."""
+        self.fernet = None
+        self.is_encrypted = False
+        self._save_config()
 
     def load_config(self, password: str = None):
         """Load configuration from file or migrate from old config."""
@@ -118,22 +137,25 @@ class Config:
                     encrypted_data = f.read()
                 decrypted_data = self.fernet.decrypt(encrypted_data)
                 self.config = json.loads(decrypted_data)
+                self._ensure_config_sections()
                 return True
             else:
                 self.is_encrypted = False  # Explicitly set to false for unencrypted config
                 self.fernet = None
                 try:
-                    with open(CONFIG_FILE, 'r') as f:
+                    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                         self.config = json.load(f)
+                    self._ensure_config_sections()
                     return True
-                except json.JSONDecodeError:
-                    self._migrate_old_config()
-                    return True
+                except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+                    # Existing file is unreadable as JSON. Do not migrate over it.
+                    return False
         else:
             # If new config doesn't exist, try to migrate from old config
             self.is_encrypted = False  # New config starts unencrypted
             self.fernet = None
             self._migrate_old_config()
+            self._ensure_config_sections()
             return True
 
     def _save_config(self):
@@ -145,8 +167,9 @@ class Config:
             with open(CONFIG_FILE, 'wb') as f:
                 f.write(encrypted_data)
         else:
-            with open(CONFIG_FILE, 'w') as f:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 f.write(config_data.decode())
+        self._protect_file(CONFIG_FILE)
 
     def _migrate_old_config(self):
         """Migrate configuration from old separate files to new unified config."""
@@ -188,6 +211,17 @@ class Config:
                 if os.path.exists(old_file):
                     backup_file = old_file + '.bak'
                     os.rename(old_file, backup_file)
+
+    def _ensure_config_sections(self):
+        """Fill in missing sections after load without rewriting the file."""
+        self.config.setdefault("db", {"server": "", "database": "", "username": "", "password": "", "port": "5432", "type": "postgres"})
+        self.config.setdefault("master_key", None)
+        self.config.setdefault("passwords", {})
+        self.config.setdefault("key_paths", {})
+        self.config.setdefault("key_passwords", {})
+        self.config.setdefault("rdp_credentials", {})
+        if "port" not in self.config.get("db", {}):
+            self.config["db"]["port"] = "5432"
 
     def _ensure_section(self, section):
         """Ensure a section exists in the config."""

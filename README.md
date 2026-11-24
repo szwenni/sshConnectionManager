@@ -45,12 +45,14 @@ sshManager
 ### Keyboard Controls
 
 - `↑/↓`: Navigate connections
-- `n`: New connection
+- `a`: Add connection
 - `e`: Edit connection
 - `d`: Delete connection
-- `t`: Toggle SSH/RDP mode
+- `Tab`: Toggle SSH/RDP mode
 - `p`: RDP password manager (in RDP mode)
 - `/`: Search
+- `Enter` / `c`: Connect
+- `m`: Master key / config encryption
 - `q`: Quit
 
 ## Security
